@@ -1,0 +1,6 @@
+.venv
+*.ipynb
+__pycache__/
+*.pyc
+.vscode/
+.idea/

@@ -1,0 +1,20 @@
+[project]
+name = "automate-intership-search"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "selenium==4.33.0",
+    "urllib3==2.4.0",
+    "undetected-chromedriver==3.5.5",
+    "webdriver-manager==4.0.2",
+]
+
+# dev dependencies
+[project.optional-dependencies]
+dev = [ 
+    # jupyter notebook support
+    "ipykernel==6.24.0",
+
+]
