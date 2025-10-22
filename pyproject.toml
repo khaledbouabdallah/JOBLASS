@@ -13,8 +13,14 @@ dependencies = [
 
 # dev dependencies
 [project.optional-dependencies]
-dev = [ 
-    # jupyter notebook support
-    "ipykernel==6.24.0",
-
+dev = [
+    "ipykernel>=6.24.0",
+    "jupyter>=1.0.0",      
+    "notebook>=7.0.0",    
 ]
+
+[project.scripts]
+joblass = "joblass.cli.commands:main"
+
+[tool.setuptools]
+packages = ["joblass"]
