@@ -8,3 +8,5 @@ __pycache__/
 playground.py
 chrome_user_data/
 logs/
+.github
+/data

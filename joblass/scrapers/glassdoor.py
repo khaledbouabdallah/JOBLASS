@@ -1,6 +1,7 @@
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.common.by import By
 from typing import Optional
+from datetime import datetime
 
 from joblass.utils.selenium_helpers import (
     human_delay,
@@ -12,6 +13,7 @@ from joblass.utils.selenium_helpers import (
 
 from joblass.utils.logger import setup_logger
 from joblass.utils.control import control
+from joblass.db import Job, JobRepository
 
 logger = setup_logger(__name__)
 
@@ -64,6 +66,54 @@ class GlassdoorScraper:
         except Exception:
             logger.debug("No modal found")
             return False
+    
+    def save_job(
+        self,
+        title: str,
+        company: str,
+        location: str,
+        url: str,
+        description: Optional[str] = None,
+        **kwargs
+    ) -> Optional[int]:
+        """
+        Save job to database with deduplication
+        
+        Args:
+            title: Job title
+            company: Company name
+            location: Job location
+            url: Job posting URL (used for deduplication)
+            description: Job description (optional)
+            **kwargs: Additional job fields (tech_stack, salary_min, etc.)
+        
+        Returns:
+            Job ID if inserted, None if duplicate
+        """
+        # Check if job already exists
+        if JobRepository.exists(url):
+            logger.info(f"Job already in database: {url}")
+            return None
+        
+        # Create Job object
+        job = Job(
+            title=title,
+            company=company,
+            location=location,
+            url=url,
+            source="glassdoor",
+            description=description,
+            scraped_date=datetime.now(),
+            **kwargs
+        )
+        
+        # Insert into database
+        job_id = JobRepository.insert(job)
+        
+        if job_id:
+            logger.info(f"Saved job to database: {title} at {company} (ID: {job_id})")
+        
+        return job_id
     
     def fill_search_form(
         self, 
