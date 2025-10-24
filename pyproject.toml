@@ -9,6 +9,7 @@ dependencies = [
     "urllib3==2.4.0",
     "undetected-chromedriver==3.5.5",
     "webdriver-manager==4.0.2",
+    "pydantic==2.0.3",
 ]
 
 # dev dependencies
@@ -16,7 +17,11 @@ dependencies = [
 dev = [
     "ipykernel>=6.24.0",
     "jupyter>=1.0.0",      
-    "notebook>=7.0.0",    
+    "notebook>=7.0.0",
+    "black>=25.9.0",
+    "ruff>=0.0.297",
+    "pytest>=7.4.0",
+    "pre-commit>=3.4.0",
 ]
 
 [project.scripts]
@@ -24,3 +29,19 @@ joblass = "joblass.cli.commands:main"
 
 [tool.setuptools]
 packages = ["joblass"]
+
+
+[tool.black]
+line-length = 88
+
+[tool.ruff]
+line-length = 88
+lint.select = ["E", "F", "C", "B", "I"]  # pick a subset you care about
+lint.ignore = ["E501", "F403"]
+exclude = ["tests/*", "docs/*"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+disallow_untyped_defs = false
+ignore_missing_imports = true

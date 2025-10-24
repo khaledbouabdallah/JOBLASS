@@ -1,7 +1,9 @@
-from undetected_chromedriver import Chrome, ChromeOptions
-from joblass.config import CHROME_PROFILE_DIR
-import shutil
 import os
+import shutil
+
+from undetected_chromedriver import Chrome, ChromeOptions
+
+from joblass.config import CHROME_PROFILE_DIR
 
 
 def create_undetected_chrome_driver():
@@ -15,13 +17,14 @@ def create_undetected_chrome_driver():
     print(f"✅ Chrome launched with user data dir: {CHROME_PROFILE_DIR}")
     return driver
 
+
 def cleanup_driver(driver):
     if driver:
         driver.quit()
         print("✅ Chrome driver closed successfully.")
-        
-def delete_chrome_profile():
 
+
+def delete_chrome_profile():
 
     if os.path.exists(CHROME_PROFILE_DIR):
         shutil.rmtree(CHROME_PROFILE_DIR)
