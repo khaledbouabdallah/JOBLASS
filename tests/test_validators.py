@@ -316,6 +316,7 @@ class TestScrapedJobData:
             "job_title": "Data Scientist",
             "company": "AI Corp",
             "location": "Lyon",
+            "url": "https://glassdoor.fr/job/data-scientist-123",
             "description": "Work on ML models",
             "verified_skills": ["Python", "TensorFlow"],
             "required_skills": ["Statistics"],
@@ -330,9 +331,7 @@ class TestScrapedJobData:
             },
         }
 
-        job = ScrapedJobData.from_glassdoor_extract(
-            raw_data, "https://glassdoor.com/job/456"
-        )
+        job = ScrapedJobData.from_glassdoor_extract(raw_data)
 
         assert job.job_title == "Data Scientist"
         assert job.company == "AI Corp"
@@ -348,11 +347,10 @@ class TestScrapedJobData:
             "job_title": "Engineer",
             "company": "Corp",
             "location": "Paris",
+            "url": "https://glassdoor.fr/job/engineer-123",
         }
 
-        job = ScrapedJobData.from_glassdoor_extract(
-            raw_data, "https://example.com/job/789"
-        )
+        job = ScrapedJobData.from_glassdoor_extract(raw_data)
 
         assert job.job_title == "Engineer"
         assert job.salary_estimate is None
@@ -373,6 +371,7 @@ class TestIntegration:
             "description": "Build ML pipelines...",
             "verified_skills": ["Python", "PyTorch", "AWS"],
             "required_skills": ["Machine Learning", "Deep Learning"],
+            "url": "https://www.glassdoor.fr/job/ml-engineer-123456",
             "salary_estimate": {
                 "lower_bound": 55000,
                 "upper_bound": 75000,
@@ -395,10 +394,8 @@ class TestIntegration:
             },
         }
 
-        url = "https://www.glassdoor.fr/job/ml-engineer-123456"
-
         # Validate
-        validated = ScrapedJobData.from_glassdoor_extract(scraped_data, url)
+        validated = ScrapedJobData.from_glassdoor_extract(scraped_data)
 
         # Check validation
         assert validated.job_title == "Senior ML Engineer"
@@ -440,9 +437,7 @@ class TestIntegration:
         }
 
         with pytest.raises(ValidationError) as exc_info:
-            ScrapedJobData.from_glassdoor_extract(
-                incomplete_data, "https://example.com/job/999"
-            )
+            ScrapedJobData.from_glassdoor_extract(incomplete_data)
 
         errors = exc_info.value.errors()
         assert any("job_title" in str(error) for error in errors)
@@ -460,8 +455,6 @@ class TestIntegration:
         }
 
         with pytest.raises(ValidationError) as exc_info:
-            ScrapedJobData.from_glassdoor_extract(
-                bad_data, "https://example.com/job/invalid"
-            )
+            ScrapedJobData.from_glassdoor_extract(bad_data)
 
         assert "upper_bound must be >= lower_bound" in str(exc_info.value)

@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
+from selenium.webdriver.support.ui import WebDriverWait
 
 from joblass.db import Job, JobRepository, ScrapedJobData
 from joblass.utils.control import control
@@ -330,6 +331,24 @@ class GlassdoorScraper:
         except NoSuchElementException:
             return None
 
+    def _extract_job_posting_url(self):
+        try:
+
+            # click the apply button to open the job posting in a new tab
+            _ = self.driver.find_element(
+                By.CSS_SELECTOR, "button[data-test='applyButton']"
+            )
+            _.click()
+            WebDriverWait(self.driver, 10).until(lambda d: len(d.window_handles) > 1)
+            self.driver.switch_to.window(self.driver.window_handles[-1])
+            url = self.driver.current_url
+            human_delay(0.5, 1.0)
+            self.driver.close()
+            self.driver.switch_to.window(self.driver.window_handles[0])
+            return url
+        except Exception:
+            return None
+
     # === Core extractors reused by safe_extract ===
 
     def extract_company_overview(self) -> dict:
@@ -470,7 +489,7 @@ class GlassdoorScraper:
             job_data["verified_skills"] = self._extract_verified_skills()
             job_data["required_skills"] = self._extract_required_skills()
             job_data["description"] = self._extract_description()
-
+            job_data["url"] = self._extract_job_posting_url()
             job_data["salary_estimate"] = self._safe_extract(self.extract_salary_info)
             job_data["company_overview"] = self._safe_extract(
                 self.extract_company_overview
@@ -488,7 +507,7 @@ class GlassdoorScraper:
             logger.error(f"Error extracting job details: {str(e)}", exc_info=True)
             return job_data
 
-    def extract_and_validate_job(self, url: str) -> Optional[ScrapedJobData]:
+    def extract_and_validate_job(self) -> Optional[ScrapedJobData]:
         """
         Extract job details and validate with Pydantic
 
@@ -507,7 +526,7 @@ class GlassdoorScraper:
                 return None
 
             # Validate with Pydantic
-            validated_data = ScrapedJobData.from_glassdoor_extract(raw_data, url)
+            validated_data = ScrapedJobData.from_glassdoor_extract(raw_data)
 
             logger.info(
                 f"✓ Validated job data: {validated_data.job_title} at {validated_data.company}"

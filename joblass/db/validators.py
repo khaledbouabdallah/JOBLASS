@@ -255,7 +255,7 @@ class ScrapedJobData(BaseModel):
         }
 
     @classmethod
-    def from_glassdoor_extract(cls, data: Dict[str, Any], url: str) -> "ScrapedJobData":
+    def from_glassdoor_extract(cls, data: Dict[str, Any]) -> "ScrapedJobData":
         """
         Create from glassdoor extract_job_details() output
 
@@ -295,7 +295,7 @@ class ScrapedJobData(BaseModel):
             job_title=data.get("job_title", ""),
             company=data.get("company", ""),
             location=data.get("location", ""),
-            url=url,
+            url=data.get("url", ""),
             description=data.get("description"),
             verified_skills=data.get("verified_skills", []),
             required_skills=data.get("required_skills", []),
