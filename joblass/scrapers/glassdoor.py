@@ -1,7 +1,7 @@
 import json
 import re
 from datetime import datetime
-from typing import Optional, TypedDict
+from typing import Optional
 
 from pydantic import ValidationError
 from selenium.common.exceptions import NoSuchElementException
@@ -21,13 +21,6 @@ from joblass.utils.selenium_helpers import (
 )
 
 logger = setup_logger(__name__)
-
-
-class SalaryInfo(TypedDict):
-    lower_bound: Optional[int]
-    upper_bound: Optional[int]
-    median: Optional[int]
-    currency: Optional[str]
 
 
 class GlassdoorScraper:
@@ -281,7 +274,7 @@ class GlassdoorScraper:
             logger.debug(f"Safe extract failed for {func.__name__}: {e}")
             return None
 
-    def _extract_job_title(self):
+    def _extract_job_title(self) -> Optional[str]:
         try:
             return self.driver.find_element(
                 By.CSS_SELECTOR, "h1[id^='jd-job-title-']"
@@ -289,7 +282,7 @@ class GlassdoorScraper:
         except NoSuchElementException:
             return None
 
-    def _extract_company(self):
+    def _extract_company(self) -> Optional[str]:
         try:
             return self.driver.find_element(
                 By.CSS_SELECTOR, "h4.heading_Subhead__jiUbT"
@@ -297,7 +290,7 @@ class GlassdoorScraper:
         except NoSuchElementException:
             return None
 
-    def _extract_location(self):
+    def _extract_location(self) -> Optional[str]:
         try:
             return self.driver.find_element(
                 By.CSS_SELECTOR, "div[data-test='location']"
@@ -305,7 +298,7 @@ class GlassdoorScraper:
         except NoSuchElementException:
             return None
 
-    def _extract_verified_skills(self):
+    def _extract_verified_skills(self) -> list[str]:
         try:
             skills = self.driver.find_elements(
                 By.CSS_SELECTOR, "li.VerifiedQualification_qualification__G0mvl span"
@@ -314,7 +307,7 @@ class GlassdoorScraper:
         except NoSuchElementException:
             return []
 
-    def _extract_required_skills(self):
+    def _extract_required_skills(self) -> list[str]:
         try:
             skills = self.driver.find_elements(
                 By.CSS_SELECTOR, "span.PendingQualification_label__vCsCk"
@@ -323,7 +316,7 @@ class GlassdoorScraper:
         except NoSuchElementException:
             return []
 
-    def _extract_description(self):
+    def _extract_description(self) -> Optional[str]:
         try:
             return self.driver.find_element(
                 By.CSS_SELECTOR, "div.JobDetails_jobDescription__uW_fK"
@@ -331,7 +324,7 @@ class GlassdoorScraper:
         except NoSuchElementException:
             return None
 
-    def _extract_job_posting_url(self):
+    def _extract_job_posting_url(self) -> Optional[str]:
         try:
 
             # click the apply button to open the job posting in a new tab
@@ -351,9 +344,9 @@ class GlassdoorScraper:
 
     # === Core extractors reused by safe_extract ===
 
-    def extract_company_overview(self) -> dict:
+    def extract_company_overview(self) -> dict[str, str | None]:
         """Extract company overview information"""
-        overview = {
+        overview: dict[str, str | None] = {
             "size": None,
             "founded": None,
             "type": None,
@@ -433,10 +426,10 @@ class GlassdoorScraper:
             logger.debug(f"Could not extract review summary: {str(e)}")
             return summary
 
-    def extract_salary_info(self) -> SalaryInfo:
+    def extract_salary_info(self) -> dict[str, str | int | None]:
         """Extract and parse salary information"""
 
-        salary_info: SalaryInfo = {
+        salary_info: dict[str, str | int | None] = {
             "lower_bound": None,
             "upper_bound": None,
             "median": None,
@@ -473,9 +466,9 @@ class GlassdoorScraper:
 
     # === Refactored main extractor ===
 
-    def extract_job_details(self) -> dict:
+    def extract_job_details(self) -> dict[str, str | list | dict | None]:
         """Extract job information from Glassdoor job details page"""
-        job_data = {}
+        job_data: dict[str, str | list | dict | None] = {}
         driver = self.driver
 
         try:

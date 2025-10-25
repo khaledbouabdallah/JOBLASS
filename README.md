@@ -1,16 +1,31 @@
-# JOBLASS: Job Lazy Apply Search System
+![Header](./assets/images/github-header-banner.png)
 
-> Automate job search tedium while staying in control
+> Too lazy to click 500 times, too smart to auto-apply
+
+**JOBLASS** is a job search automation tool that scrapes, filters, and ranks positions so you can focus on applying to jobs that actually matter.
+
+## The Problem
+
+The hiring process is fundamentally broken and nobody wants to admit it.
+
+Companies use ATS systems that auto-reject candidates based on keyword matching. HR departments post job descriptions written by people who've never done the job. Recruiters demand 5 years of experience for entry-level positions. Your CV gets filtered by an algorithm before a human ever sees it.
+
+Meanwhile you're expected to:
+- Manually browse through hundreds of identical job posts
+- Research every company like you're writing a thesis
+- Craft personalized cover letters that nobody reads
+- Apply through broken portals that lose your information
+- Wait weeks for auto-generated rejection emails
+
+They automated their side. Time to automate yours.
 
 ## Why This Exists
-
-Job applications suck. Companies auto-reject candidates. You waste hours scrolling LinkedIn and researching companies. Recruiters filter by keywords instead of reading CVs.
 
 JOBLASS automates the boring parts: scraping, filtering, organizing, tracking. You stay in control of the actual decisions.
 
 ## What It Does
 
-1. Scrapes job postings from LinkedIn (visible browser, you control it)
+1. Scrapes job postings from Glassdoor (other sources may be added later) with a visible browser, you control it.
 2. Filters out obvious garbage (consulting firms, unpaid internships, "rockstar" descriptions)
 3. Analyzes jobs with LLM (extracts tech stack, spots red flags, gauges quality)
 4. Ranks by customizable criteria (tech match, learning opportunity, company quality)
@@ -27,10 +42,10 @@ JOBLASS automates the boring parts: scraping, filtering, organizing, tracking. Y
 
 ## Philosophy
 
-**Your Data:** Everything stored locally, no cloud accounts, export anytime  
-**Transparent:** See what's scraped, how it's scored, change the logic  
-**Determinism over Hallucination:** Use rules where possible, LLM only when needed  
-**Human Control:** Bot suggests, you decide  
+**Your Data:** Everything stored locally, no cloud accounts, export anytime
+**Transparent:** See what's scraped, how it's scored, change the logic
+**Determinism over Hallucination:** Use rules where possible, LLM only when needed
+**Human Control:** Bot suggests, you decide
 **Open Source:** Audit the code, customize it, no black boxes
 
 ## Installation
@@ -42,7 +57,7 @@ pip install -r requirements.txt
 python joblass.py
 ```
 
-**Requirements:** Python 3.10+, Chrome browser, job search account (LinkedIn, etc.)
+**Requirements:** Python 3.10+, Chrome browser, job search account (Glassdoor)
 
 ## Quick Start
 
@@ -101,16 +116,16 @@ Top Matches (Sorted by Score)
 1. [92] Mirakl - AI Research Intern
    📍 Paris | 💰 €1600/mo | 🏢 Unicorn
    ✅ LLM fine-tuning, PyTorch, research
-   
-2. [89] Rakuten - ML Research Intern  
+
+2. [89] Rakuten - ML Research Intern
    📍 Paris | 💰 €1100/mo | 🏢 Global
    ✅ Research lab, publication potential
 ```
 
 ## Status
 
-**Current:** MVP - scraping + storage + basic UI  
-**Next:** Scoring + LLM analysis  
+**Current:** MVP - scraping + storage + basic UI
+**Next:** Scoring + LLM analysis
 **Future:** Application tracking, motivation letters
 
 Built while job searching. Functional but rough. PRs welcome.
@@ -154,5 +169,5 @@ MIT - Use however you want
 
 ---
 
-**Status:** 🚧 Active development  
+**Status:** 🚧 Active development
 **Version:** 0.1.0-alpha
