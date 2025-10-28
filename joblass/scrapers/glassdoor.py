@@ -1,12 +1,16 @@
 import json
+import logging
 import re
-from datetime import datetime
+import time
+from datetime import date, datetime
 from typing import Optional
 
 from pydantic import ValidationError
 from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
+from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 
 from joblass.db import Job, JobRepository, ScrapedJobData
@@ -14,13 +18,15 @@ from joblass.utils.control import control
 from joblass.utils.logger import setup_logger
 from joblass.utils.selenium_helpers import (
     clear_and_type,
+    highlight,
     human_click,
     human_delay,
     human_move,
+    human_scroll_to_element,
     wait_for_element,
 )
 
-logger = setup_logger(__name__)
+logger = setup_logger(__name__, level=logging.DEBUG)
 
 
 class GlassdoorScraper:
@@ -30,6 +36,7 @@ class GlassdoorScraper:
 
     def __init__(self, driver: WebDriver):
         self.driver = driver
+        self.action: ActionChains = ActionChains(driver)
 
     def navigate_to_home(self):
         """Navigate to Glassdoor homepage"""
@@ -137,7 +144,7 @@ class GlassdoorScraper:
         Returns:
             Job ID if successful, None otherwise
         """
-        if JobRepository.exists(validated_data.url):
+        if JobRepository.exists(validated_data.url) and validated_data.url:
             logger.info(f"Job already in database: {validated_data.url}")
             return None
 
@@ -197,14 +204,14 @@ class GlassdoorScraper:
                 self.driver, By.ID, "searchBar-jobTitle", timeout=3
             )
             human_move(self.driver, job_input)
-            clear_and_type(job_input, job_title)
+            clear_and_type(job_input, self.action, job_title)
             human_delay(0.5, 1.0)
 
             location_input = wait_for_element(
                 self.driver, By.ID, "searchBar-location", timeout=3
             )
             human_move(self.driver, location_input)
-            clear_and_type(location_input, location)
+            clear_and_type(location_input, self.action, location)
             human_delay(1.0, 2.0)
 
             suggestions_list = wait_for_element(
@@ -324,23 +331,86 @@ class GlassdoorScraper:
         except NoSuchElementException:
             return None
 
-    def _extract_job_posting_url(self) -> Optional[str]:
-        try:
+    def _extract_job_posting_url(self) -> tuple[Optional[str], Optional[bool]]:
+        """
+        Extract external job posting URL (if not easy apply)
 
+        Returns:
+            Tuple of (external_url, is_easy_apply)
+            - For easy apply jobs: (None, True)
+            - For external apply jobs: (url, False) or (None, None) if failed
+        """
+        is_easy_apply = False
+        try:
             # click the apply button to open the job posting in a new tab
-            _ = self.driver.find_element(
+            button = self.driver.find_element(
                 By.CSS_SELECTOR, "button[data-test='applyButton']"
             )
-            _.click()
-            WebDriverWait(self.driver, 10).until(lambda d: len(d.window_handles) > 1)
+            logger.debug("Standard Apply button detected")
+        except NoSuchElementException:
+            # Easy apply job - we don't extract URL for these
+            logger.debug("Easy Apply button detected, skipping URL extraction")
+            return None, True
+
+        try:
+            button.click()
+            logger.debug("Clicked apply button to open job posting")
+            WebDriverWait(self.driver, 5).until(lambda d: len(d.window_handles) > 1)
             self.driver.switch_to.window(self.driver.window_handles[-1])
+            # wait for page to load
+            WebDriverWait(self.driver, 10).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+            human_delay(0.5, 1)
             url = self.driver.current_url
-            human_delay(0.5, 1.0)
+            logger.debug(f"Extracted external job posting URL: {url}")
             self.driver.close()
             self.driver.switch_to.window(self.driver.window_handles[0])
-            return url
-        except Exception:
-            return None
+            return url, is_easy_apply
+        except Exception as e:
+            logger.debug(f"Failed to extract external URL: {e}")
+            return None, None
+
+    def _parse_job_age_to_seconds(self, job_age: str) -> int:
+        """Parse job age string to seconds.
+        Example formats: "2d", "5h", "30j+"
+        """
+        # Extract number and unit using regex
+        match = re.match(r"(\d+)([dhj])\+?", job_age)
+        if not match:
+            raise ValueError(f"Invalid job age format: {job_age}")
+        value, unit = match.groups()
+        value = int(value)
+        if unit == "d":
+            return value * 86400  # 1 day = 86400 seconds
+        elif unit == "h":
+            return value * 3600  # 1 hour = 3600 seconds
+        elif unit == "j":
+            return value * 86400  # Assuming 'j' means days as well
+        else:
+            raise ValueError(f"Unknown time unit in job age: {unit}")
+
+    def _extract_job_header_info(self, element: WebElement) -> dict:
+        # fromat: "XXd or XXh", can be 30j+
+        job_age = element.find_element(By.CSS_SELECTOR, "div[data-test='job-age']").text
+        job_age = self._parse_job_age_to_seconds(job_age)
+        job_published_date = time.time() - job_age
+        job_external_id = element.get_attribute("data-jobid")
+        return {
+            "job_external_id": job_external_id,
+            "job_age": job_age,
+            "job_published_date": date.fromtimestamp(job_published_date),
+        }
+
+    def _click_on_show_more_description(self) -> None:
+        """Click on 'Show More' button in job description if present"""
+        try:
+            show_more_button = self.driver.find_element(
+                By.CSS_SELECTOR, "button[data-test='show-more-cta']"
+            )
+            human_click(self.driver, show_more_button)
+        except NoSuchElementException:
+            pass
 
     # === Core extractors reused by safe_extract ===
 
@@ -389,36 +459,64 @@ class GlassdoorScraper:
     def extract_review_summary(self) -> dict:
         """Extract review summary with pros and cons"""
         summary: dict[str, list[dict[str, str | int]]] = {"pros": [], "cons": []}
-        try:
-            pros_label = "span.JobDetails_reviewProsLabel__40LEp"
-            cons_label = "span.JobDetails_reviewConsLabel__rua2F"
 
-            # Pros
+        try:
+            # Find the review wrapper that contains both pros and cons
+            review_wrapper = self.driver.find_element(
+                By.CSS_SELECTOR, "div.JobDetails_reviewSummaryWrapper__eaFbQ"
+            )
+
+            # Extract Pros
             try:
-                pros_list = self.driver.find_element(pros_label).find_element(
-                    By.XPATH, "following-sibling::ul"
+
+                # Find pros label and its parent div
+                pros_section = review_wrapper.find_element(
+                    By.CSS_SELECTOR, "span.JobDetails_reviewProsLabel__40LEp"
+                ).find_element(
+                    By.XPATH, ".."
+                )  # Go to parent div
+
+                # Find the ul list within the parent
+                pros_list = pros_section.find_element(
+                    By.CSS_SELECTOR, "ul.JobDetails_reviewBlurbList__ZtUjH"
                 )
+
                 for item in pros_list.find_elements(By.TAG_NAME, "li"):
-                    match = re.match(r'"(.+?)"\s*\(.*?(\d+)', item.text)
+                    # Pattern handles multiple formats:
+                    # French: "text" (dans X avis)
+                    # English: "text" (in X reviews) or just "text" (X)
+                    match = re.search(r'"([^"]+)"\s*\(.*?(\d+)', item.text)
                     if match:
                         summary["pros"].append(
                             {"text": match.group(1), "count": int(match.group(2))}
                         )
             except NoSuchElementException:
+                logger.debug("Pros section not found")
                 pass
 
-            # Cons
+            # Extract Cons
             try:
-                cons_list = self.driver.find_element(cons_label).find_element(
-                    By.XPATH, "following-sibling::ul"
+                # Find cons label and its parent div
+                cons_section = review_wrapper.find_element(
+                    By.CSS_SELECTOR, "span.JobDetails_reviewConsLabel__rua2F"
+                ).find_element(
+                    By.XPATH, ".."
+                )  # Go to parent div
+
+                # Find the ul list within the parent
+                cons_list = cons_section.find_element(
+                    By.CSS_SELECTOR, "ul.JobDetails_reviewBlurbList__ZtUjH"
                 )
+
                 for item in cons_list.find_elements(By.TAG_NAME, "li"):
-                    match = re.match(r'"(.+?)"\s*\(.*?(\d+)', item.text)
+                    # Pattern: "text" (dans X avis) or "text" (X reviews)
+                    match = re.search(r'"([^"]+)"\s*\([^0-9]*(\d+)', item.text)
                     if match:
                         summary["cons"].append(
                             {"text": match.group(1), "count": int(match.group(2))}
                         )
             except NoSuchElementException:
+                logger.debug("Cons section not found")
                 pass
 
             return summary
@@ -464,17 +562,20 @@ class GlassdoorScraper:
             logger.debug(f"Could not extract salary info: {str(e)}")
             return salary_info
 
-    # === Refactored main extractor ===
+    # === main extractor ===
 
-    def extract_job_details(self) -> dict[str, str | list | dict | None]:
+    def extract_job_details(self) -> dict[str, str | list | dict | bool | None]:
         """Extract job information from Glassdoor job details page"""
-        job_data: dict[str, str | list | dict | None] = {}
-        driver = self.driver
+        job_data: dict[str, str | list | dict | bool | None] = {}
 
         try:
             wait_for_element(
-                driver, By.CSS_SELECTOR, "div.JobDetails_jobDetailsContainer__y9P3L"
+                self.driver,
+                By.CSS_SELECTOR,
+                "div.JobDetails_jobDetailsContainer__y9P3L",
             )
+
+            self._click_on_show_more_description()
 
             job_data["job_title"] = self._extract_job_title()
             job_data["company"] = self._extract_company()
@@ -482,7 +583,13 @@ class GlassdoorScraper:
             job_data["verified_skills"] = self._extract_verified_skills()
             job_data["required_skills"] = self._extract_required_skills()
             job_data["description"] = self._extract_description()
-            job_data["url"] = self._extract_job_posting_url()
+
+            # Extract external URL and easy apply status
+            external_url, job_data["is_easy_apply"] = self._extract_job_posting_url()
+            # If we got an external URL, use it; otherwise keep the Glassdoor URL
+            if external_url:
+                job_data["url"] = external_url
+
             job_data["salary_estimate"] = self._safe_extract(self.extract_salary_info)
             job_data["company_overview"] = self._safe_extract(
                 self.extract_company_overview
@@ -544,30 +651,73 @@ class GlassdoorScraper:
 
     def search_jobs(
         self, job_title: str, location: str, preferred_location: Optional[str] = None
-    ) -> bool:
+    ) -> list[ScrapedJobData] | bool:
         """Complete job search workflow"""
         try:
             logger.info("=== Starting Glassdoor job search ===")
             self.navigate_to_home()
 
-            if not self.fill_search_form(job_title, location, preferred_location):
+            jobs_found = self.fill_search_form(job_title, location, preferred_location)
+
+            if not jobs_found:
                 logger.error("Failed to fill search form")
                 return False
 
             # TODO: implement extra filters
-            # date posted, easy apply, salary estiamte, company rating, sort by relevance/date
+            # date posted, easy apply, salary estiamte, company rating, sort by relevance/date: db.models.SearchCriteria:
+            # TODO: save search url, filters, keywords for future reference
 
-            # TODO: save search url for future reference
+            scraped_jobs: list[ScrapedJobData] = []
+            current_job_index = 0
+            jobs = self.driver.find_elements(
+                By.CSS_SELECTOR, "li[data-test='jobListing']"
+            )
 
-            # TODO: Scrape job listings from results page
-            # iterate through jobs by clicking, then scrap its contenet, go the next job, and keep scolling
-            # no pagination exist, after some scrolling, "see more jobs" button appears at the bottom
-            # no changing page, clicking show job details
-            # smart search: if job already exists in db, skip it (no need to click it)
-            # maybe save job listing urls to a set to avoid duplicates
+            while current_job_index < jobs_found:
+                control.wait_if_paused()
+                control.check_should_stop()
+                self.close_modal_if_present()
+
+                if current_job_index >= len(jobs):
+                    load_more_jobs_button = self.driver.find_element(
+                        By.CSS_SELECTOR, "show-more-cta'load-more']"
+                    )
+                    if load_more_jobs_button.is_displayed():
+                        human_scroll_to_element(self.driver, load_more_jobs_button)
+                        human_click(self.driver, load_more_jobs_button)
+                        human_delay(1, 2)
+                        jobs = self.driver.find_elements(
+                            By.CSS_SELECTOR, "li[data-test='jobListing']"
+                        )
+                    break
+                job_element = jobs[current_job_index]
+                job_element_info = self._extract_job_header_info(job_element)
+                # check if job_element is visible
+                if not job_element.is_displayed():
+                    human_scroll_to_element(self.driver, job_element)
+
+                human_click(self.driver, job_element)
+                human_delay(0.3, 1)
+                job_data = self.extract_and_validate_job()
+
+                # Add job info from header to job_data
+                if job_data:
+                    job_data.job_external_id = job_element_info.get("job_external_id")
+                    job_data.job_age = job_element_info.get("job_age")
+                    job_data.posted_date = job_element_info.get("job_published_date")
+
+                highlight(
+                    job_element,
+                    duration=0.5,
+                    color="lightgreen",
+                    border="2px solid green",
+                )
+                if job_data:
+                    scraped_jobs.append(job_data)
+                current_job_index += 1
 
             logger.info("=== Job search completed successfully ===")
-            return True
+            return scraped_jobs
 
         except Exception as e:
             logger.error(f"Search workflow failed: {str(e)}", exc_info=True)

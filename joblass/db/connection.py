@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     title TEXT NOT NULL,
     company TEXT NOT NULL,
     location TEXT NOT NULL,
-    url TEXT NOT NULL UNIQUE,
+    url TEXT NOT NULL,
+    job_hash TEXT NOT NULL UNIQUE,
     source TEXT NOT NULL,
     description TEXT,
     tech_stack TEXT,
@@ -38,6 +39,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     scraped_date TIMESTAMP NOT NULL,
     job_type TEXT,
     remote_option TEXT,
+    is_easy_apply BOOLEAN,
+    job_external_id TEXT,
     company_size TEXT,
     company_industry TEXT,
     company_sector TEXT,
@@ -50,10 +53,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE INDEX IF NOT EXISTS idx_jobs_hash ON jobs(job_hash);
 CREATE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url);
 CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company);
 CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source);
 CREATE INDEX IF NOT EXISTS idx_jobs_scraped_date ON jobs(scraped_date);
+CREATE INDEX IF NOT EXISTS idx_jobs_external_id ON jobs(job_external_id);
 """
 
 SCHEMA_APPLICATIONS = """
@@ -232,6 +237,9 @@ def migrate_db() -> None:
             "company_type": "TEXT",
             "company_revenue": "TEXT",
             "reviews_data": "TEXT",
+            "is_easy_apply": "BOOLEAN",
+            "job_external_id": "TEXT",
+            "job_hash": "TEXT",
         }
 
         # Add missing columns
@@ -242,6 +250,54 @@ def migrate_db() -> None:
                 cursor.execute(alter_sql)
                 logger.info(f"Added column: {column_name} ({column_type})")
                 columns_added += 1
+
+        # Create index on job_external_id if it was just added
+        if "job_external_id" not in existing_columns and columns_added > 0:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_jobs_external_id ON jobs(job_external_id)"
+            )
+            logger.info("Created index on job_external_id")
+
+        # Create index on job_hash if it was just added
+        if "job_hash" not in existing_columns and columns_added > 0:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_hash ON jobs(job_hash)")
+            logger.info("Created index on job_hash")
+
+        # Populate job_hash for existing records
+        if "job_hash" not in existing_columns:
+            logger.info("Populating job_hash for existing records...")
+            cursor.execute(
+                "SELECT id, title, company, location, source, job_external_id FROM jobs WHERE job_hash IS NULL"
+            )
+            rows = cursor.fetchall()
+
+            from joblass.db.models import Job
+
+            for row in rows:
+                # Create temporary Job object to generate hash
+                temp_job = Job(
+                    id=row[0],
+                    title=row[1],
+                    company=row[2],
+                    location=row[3],
+                    url="http://temp.com",  # Dummy URL (not used for hash)
+                    source=row[4],
+                    job_external_id=row[5],
+                )
+                job_hash = temp_job.generate_hash()
+                cursor.execute(
+                    "UPDATE jobs SET job_hash = ? WHERE id = ?", (job_hash, row[0])
+                )
+
+            logger.info(f"Populated job_hash for {len(rows)} existing records")
+
+        # Remove UNIQUE constraint from URL (if needed - SQLite doesn't support DROP CONSTRAINT)
+        # We'll keep URL indexed but not unique, relying on job_hash instead
+        # Note: This requires recreating the table in SQLite, which is complex
+        # For now, we'll just warn if there's an issue
+        logger.info(
+            "Note: URL column still has UNIQUE constraint - new schema uses job_hash for uniqueness"
+        )
 
         conn.commit()
 

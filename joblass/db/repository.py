@@ -32,20 +32,22 @@ class JobRepository:
                 cursor.execute(
                     """
                     INSERT INTO jobs (
-                        title, company, location, url, source,
+                        title, company, location, url, job_hash, source,
                         description, tech_stack, verified_skills, required_skills,
                         salary_min, salary_max, salary_median, salary_currency,
                         posted_date, scraped_date, job_type, remote_option,
+                        is_easy_apply, job_external_id,
                         company_size, company_industry, company_sector,
                         company_founded, company_type, company_revenue,
                         reviews_data, raw_html
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         job.title,
                         job.company,
                         job.location,
                         job.url,
+                        job.job_hash,
                         job.source,
                         job.description,
                         job.tech_stack,
@@ -59,6 +61,8 @@ class JobRepository:
                         job.scraped_date,
                         job.job_type,
                         job.remote_option,
+                        job.is_easy_apply,
+                        job.job_external_id,
                         job.company_size,
                         job.company_industry,
                         job.company_sector,
@@ -71,11 +75,13 @@ class JobRepository:
                 )
                 job_id = cursor.lastrowid
                 logger.info(
-                    f"Inserted job: {job.title} at {job.company} (ID: {job_id})"
+                    f"Inserted job: {job.title} at {job.company} (ID: {job_id}, hash: {job.job_hash})"
                 )
                 return job_id
         except sqlite3.IntegrityError:
-            logger.warning(f"Job already exists: {job.url}")
+            logger.warning(
+                f"Job already exists (duplicate hash): {job.job_hash} - {job.title} at {job.company}"
+            )
             return None
         except Exception as e:
             logger.error(f"Failed to insert job: {e}", exc_info=True)
@@ -97,7 +103,7 @@ class JobRepository:
 
     @staticmethod
     def get_by_url(url: str) -> Optional[Job]:
-        """Get job by URL (for deduplication)"""
+        """Get job by URL (for backward compatibility)"""
         try:
             with get_db_cursor() as cursor:
                 cursor.execute("SELECT * FROM jobs WHERE url = ?", (url,))
@@ -110,9 +116,56 @@ class JobRepository:
             return None
 
     @staticmethod
-    def exists(url: str) -> bool:
-        """Check if job exists by URL"""
-        return JobRepository.get_by_url(url) is not None
+    def get_by_hash(job_hash: str) -> Optional[Job]:
+        """Get job by hash (primary deduplication method)"""
+        try:
+            with get_db_cursor() as cursor:
+                cursor.execute("SELECT * FROM jobs WHERE job_hash = ?", (job_hash,))
+                row = cursor.fetchone()
+                if row:
+                    return JobRepository._row_to_job(row)
+                return None
+        except Exception as e:
+            logger.error(f"Failed to fetch job by hash: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def exists(
+        url: str | None = None, job: Job | None = None, job_hash: str | None = None
+    ) -> bool:
+        """
+        Check if job exists using multiple strategies
+
+        Priority order:
+        1. job_hash (if provided or can be generated from job)
+        2. job object (generates hash)
+        3. URL (legacy fallback)
+
+        Args:
+            url: Job URL (legacy method)
+            job: Job object (generates hash for checking)
+            job_hash: Pre-computed job hash
+
+        Returns:
+            True if job exists in database
+        """
+        # Priority 1: Use provided hash
+        if job_hash:
+            return JobRepository.get_by_hash(job_hash) is not None
+
+        # Priority 2: Generate hash from job object
+        if job:
+            generated_hash = job.generate_hash()
+            return JobRepository.get_by_hash(generated_hash) is not None
+
+        # Priority 3: Legacy URL-based check (least reliable)
+        if url:
+            return JobRepository.get_by_url(url) is not None
+
+        logger.warning(
+            "exists() called without url, job, or job_hash - returning False"
+        )
+        return False
 
     @staticmethod
     def get_all(
@@ -213,10 +266,11 @@ class JobRepository:
                 cursor.execute(
                     """
                     UPDATE jobs SET
-                        title = ?, company = ?, location = ?, url = ?,
+                        title = ?, company = ?, location = ?, url = ?, job_hash = ?,
                         description = ?, tech_stack = ?, verified_skills = ?, required_skills = ?,
                         salary_min = ?, salary_max = ?, salary_median = ?, salary_currency = ?,
                         posted_date = ?, job_type = ?, remote_option = ?,
+                        is_easy_apply = ?, job_external_id = ?,
                         company_size = ?, company_industry = ?, company_sector = ?,
                         company_founded = ?, company_type = ?, company_revenue = ?,
                         reviews_data = ?,
@@ -228,6 +282,7 @@ class JobRepository:
                         job.company,
                         job.location,
                         job.url,
+                        job.job_hash,
                         job.description,
                         job.tech_stack,
                         job.verified_skills,
@@ -239,6 +294,8 @@ class JobRepository:
                         job.posted_date,
                         job.job_type,
                         job.remote_option,
+                        job.is_easy_apply,
+                        job.job_external_id,
                         job.company_size,
                         job.company_industry,
                         job.company_sector,
@@ -287,51 +344,18 @@ class JobRepository:
 
     @staticmethod
     def _row_to_job(row: sqlite3.Row) -> Job:
-        """Convert database row to Job object"""
-        return Job(
-            id=row["id"],
-            title=row["title"],
-            company=row["company"],
-            location=row["location"],
-            url=row["url"],
-            source=row["source"],
-            description=row["description"],
-            tech_stack=row["tech_stack"],
-            verified_skills=(
-                row["verified_skills"] if "verified_skills" in row.keys() else None
-            ),
-            required_skills=(
-                row["required_skills"] if "required_skills" in row.keys() else None
-            ),
-            salary_min=row["salary_min"],
-            salary_max=row["salary_max"],
-            salary_median=(
-                row["salary_median"] if "salary_median" in row.keys() else None
-            ),
-            salary_currency=row["salary_currency"],
-            posted_date=(
-                datetime.fromisoformat(row["posted_date"])
-                if row["posted_date"]
-                else None
-            ),
-            scraped_date=datetime.fromisoformat(row["scraped_date"]),
-            job_type=row["job_type"],
-            remote_option=row["remote_option"],
-            company_size=row["company_size"],
-            company_industry=row["company_industry"],
-            company_sector=(
-                row["company_sector"] if "company_sector" in row.keys() else None
-            ),
-            company_founded=(
-                row["company_founded"] if "company_founded" in row.keys() else None
-            ),
-            company_type=row["company_type"] if "company_type" in row.keys() else None,
-            company_revenue=(
-                row["company_revenue"] if "company_revenue" in row.keys() else None
-            ),
-            reviews_data=row["reviews_data"] if "reviews_data" in row.keys() else None,
-            raw_html=row["raw_html"],
-        )
+        """Convert database row to Job object using Pydantic"""
+        # Convert row to dict
+        data = dict(row)
+
+        # Parse datetime fields
+        if data.get("posted_date"):
+            data["posted_date"] = datetime.fromisoformat(data["posted_date"])
+        if data.get("scraped_date"):
+            data["scraped_date"] = datetime.fromisoformat(data["scraped_date"])
+
+        # Pydantic handles validation and type conversion
+        return Job.model_validate(data)
 
 
 class ApplicationRepository:
@@ -428,35 +452,23 @@ class ApplicationRepository:
 
     @staticmethod
     def _row_to_application(row: sqlite3.Row) -> Application:
-        """Convert database row to Application object"""
-        return Application(
-            id=row["id"],
-            job_id=row["job_id"],
-            status=row["status"],
-            applied_date=(
-                datetime.fromisoformat(row["applied_date"])
-                if row["applied_date"]
-                else None
-            ),
-            last_updated=datetime.fromisoformat(row["last_updated"]),
-            cover_letter_path=row["cover_letter_path"],
-            notes=row["notes"],
-            interview_date=(
-                datetime.fromisoformat(row["interview_date"])
-                if row["interview_date"]
-                else None
-            ),
-            interview_notes=row["interview_notes"],
-            rejection_date=(
-                datetime.fromisoformat(row["rejection_date"])
-                if row["rejection_date"]
-                else None
-            ),
-            rejection_reason=row["rejection_reason"],
-            offer_date=(
-                datetime.fromisoformat(row["offer_date"]) if row["offer_date"] else None
-            ),
-        )
+        """Convert database row to Application object using Pydantic"""
+        # Convert row to dict
+        data = dict(row)
+
+        # Parse datetime fields
+        for field in [
+            "applied_date",
+            "last_updated",
+            "interview_date",
+            "rejection_date",
+            "offer_date",
+        ]:
+            if data.get(field):
+                data[field] = datetime.fromisoformat(data[field])
+
+        # Pydantic handles validation and type conversion
+        return Application.model_validate(data)
 
 
 class ScoreRepository:
@@ -608,18 +620,16 @@ class ScoreRepository:
 
     @staticmethod
     def _row_to_score(row: sqlite3.Row) -> Score:
-        """Convert database row to Score object"""
-        return Score(
-            id=row["id"],
-            job_id=row["job_id"],
-            tech_match=row["tech_match"],
-            learning_opportunity=row["learning_opportunity"],
-            company_quality=row["company_quality"],
-            practical_factors=row["practical_factors"],
-            total_score=row["total_score"],
-            penalties=row["penalties"],
-            bonuses=row["bonuses"],
-            scored_date=datetime.fromisoformat(row["scored_date"]),
-            llm_analysis=row["llm_analysis"],
-            red_flags=row["red_flags"],
-        )
+        """Convert database row to Score object using Pydantic"""
+        # Convert row to dict
+        data = dict(row)
+
+        # Parse datetime fields
+        if data.get("scored_date"):
+            data["scored_date"] = datetime.fromisoformat(data["scored_date"])
+
+        # Pydantic handles validation and type conversion
+        return Score.model_validate(data)
+
+
+# TODO search repository

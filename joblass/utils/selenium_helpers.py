@@ -3,6 +3,7 @@ import time
 
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support import expected_conditions as EC
@@ -135,14 +136,58 @@ def scroll_to_element(driver: WebDriver, element: WebElement):
     logger.debug("Scrolled to element")
 
 
-def clear_and_type(element: WebElement, text: str):
+def clear_and_type(element: WebElement, action: ActionChains, text: str):
     """
     Clear input field and type text with human-like behavior
+
+    This function attempts several strategies to ensure the field is cleared:
+    1. Click the element to focus.
+    2. Use element.clear().
+    3. Send Ctrl+A (select all) and Delete to remove any content.
+    4. Fallback to JS to clear .value and .innerText for stubborn cases.
+    Finally, it types the provided text using human_type.
 
     Args:
         element: Input WebElement
         text: Text to type
     """
-    element.clear()
-    human_delay(0.2, 0.4)
+
+    # Focus the element first
+    element.click()
+    human_delay(0.05, 0.15)
+    # Try select-all + delete (works for many input fields)
+
+    action.key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL).perform()
+    human_delay(0.02, 0.05)
+    action.send_keys(Keys.DELETE).perform()
+
+    human_delay(0.1, 0.2)
     human_type(element, text)
+
+
+def human_scroll_to_element(driver: WebDriver, element: WebElement):
+    driver.execute_script(
+        "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element
+    )
+    human_delay(0.3, 0.7)
+
+
+def highlight(element, duration=2, color="yellow", border="3px solid green"):
+    """Highlight element asynchronously so Selenium can continue working."""
+    driver = element._parent
+    # original_style = element.get_attribute("style")
+    highlight_style = f"background: {color}; border: {border};"
+
+    # Apply highlight immediately
+    driver.execute_script(
+        "arguments[0].setAttribute('style', arguments[1]);", element, highlight_style
+    )
+
+    # # Define a background function to restore style later
+    # def restore():
+    #     time.sleep(duration)
+    #     try:
+    #         driver.execute_script("arguments[0].setAttribute('style', arguments[1]);", element, original_style)
+    #     except Exception:
+    #         # Element might be gone or page changed
+    #         pass

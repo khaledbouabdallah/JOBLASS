@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from joblass.db import (
     Application,
@@ -78,25 +79,22 @@ class TestJobModel:
             salary_median=50000,
             company_size="50-100",
             company_sector="AI",
+            is_easy_apply=True,
+            job_external_id="ext456",
+            posted_date=datetime(2025, 10, 20),
         )
         assert job.salary_min == 40000
         assert job.verified_skills == '["Python"]'
         assert job.company_sector == "AI"
-
-    def test_job_missing_url_raises_error(self):
-        """Test that missing URL raises ValueError"""
-        with pytest.raises(ValueError, match="Job URL is required"):
-            Job(
-                title="Engineer",
-                company="Corp",
-                location="Paris",
-                url="",  # Empty URL
-                source="glassdoor",
-            )
+        assert job.is_easy_apply is True
+        assert job.job_external_id == "ext456"
+        assert job.posted_date == datetime(2025, 10, 20)
 
     def test_job_missing_title_raises_error(self):
-        """Test that missing title raises ValueError"""
-        with pytest.raises(ValueError, match="Job title is required"):
+        """Test that missing title raises ValidationError"""
+        with pytest.raises(
+            ValidationError, match="String should have at least 1 characters"
+        ):
             Job(
                 title="",  # Empty title
                 company="Corp",
@@ -117,8 +115,8 @@ class TestApplicationModel:
         assert app.id is None
 
     def test_application_invalid_status(self):
-        """Test that invalid status raises error"""
-        with pytest.raises(ValueError, match="Invalid status"):
+        """Test that invalid status raises ValidationError"""
+        with pytest.raises(ValidationError, match="Input should be"):
             Application(job_id=1, status="invalid_status")
 
     def test_application_valid_statuses(self):
@@ -390,6 +388,30 @@ class TestJobRepository:
         assert success
 
         assert JobRepository.get_by_id(job_id) is None
+
+    def test_insert_and_retrieve_new_fields(self, temp_db):
+        """Test that new fields (is_easy_apply, job_external_id, posted_date) are saved and retrieved"""
+        job = Job(
+            title="Data Scientist",
+            company="ML Corp",
+            location="Paris",
+            url="https://example.com/job/new-fields-test",
+            source="glassdoor",
+            is_easy_apply=True,
+            job_external_id="glassdoor_123456",
+            posted_date=datetime(2025, 10, 20, 10, 30, 0),
+        )
+
+        job_id = JobRepository.insert(job)
+        assert job_id is not None
+
+        # Retrieve and verify
+        retrieved = JobRepository.get_by_id(job_id)
+        assert retrieved is not None
+        # SQLite stores booleans as integers (1/0)
+        assert bool(retrieved.is_easy_apply) is True
+        assert retrieved.job_external_id == "glassdoor_123456"
+        assert retrieved.posted_date == datetime(2025, 10, 20, 10, 30, 0)
 
 
 class TestApplicationRepository:

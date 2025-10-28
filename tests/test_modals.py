@@ -1,15 +1,16 @@
 """
-Tests for Pydantic validators in joblass.db.validators
+Tests for Pydantic models in joblass.db.models
 
 Run with: pytest tests/test_validators.py -v
 """
 
 import json
+from datetime import datetime
 
 import pytest
 from pydantic import ValidationError
 
-from joblass.db.validators import (
+from joblass.db.models import (
     CompanyOverview,
     ReviewItem,
     ReviewSummary,
@@ -295,6 +296,9 @@ class TestScrapedJobData:
             url="https://example.com/job/123",
             verified_skills=["Python"],
             required_skills=["ML"],
+            is_easy_apply=True,
+            job_external_id="ext123",
+            posted_date=datetime(2025, 10, 25),
             salary_estimate=SalaryEstimate(
                 lower_bound=40000, upper_bound=60000, currency="EUR"
             ),
@@ -304,6 +308,10 @@ class TestScrapedJobData:
 
         assert db_dict["title"] == "ML Engineer"
         assert db_dict["company"] == "TechCorp"
+        assert db_dict["url"] == "https://example.com/job/123"
+        assert db_dict["is_easy_apply"] is True
+        assert db_dict["job_external_id"] == "ext123"
+        assert db_dict["posted_date"] == datetime(2025, 10, 25)
         assert db_dict["salary_min"] == 40000
         assert db_dict["salary_max"] == 60000
         assert db_dict["salary_currency"] == "EUR"
@@ -320,6 +328,9 @@ class TestScrapedJobData:
             "description": "Work on ML models",
             "verified_skills": ["Python", "TensorFlow"],
             "required_skills": ["Statistics"],
+            "is_easy_apply": False,
+            "job_external_id": "123456",
+            "posted_date": datetime(2025, 10, 20),
             "salary_estimate": {
                 "lower_bound": 45000,
                 "upper_bound": 65000,
@@ -336,6 +347,9 @@ class TestScrapedJobData:
         assert job.job_title == "Data Scientist"
         assert job.company == "AI Corp"
         assert len(job.verified_skills) == 2
+        assert job.is_easy_apply is False
+        assert job.job_external_id == "123456"
+        assert job.posted_date == datetime(2025, 10, 20)
         assert job.salary_estimate is not None
         assert job.salary_estimate.lower_bound == 45000
         assert job.company_overview is not None

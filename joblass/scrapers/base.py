@@ -6,11 +6,17 @@ from undetected_chromedriver import Chrome, ChromeOptions
 from joblass.config import CHROME_PROFILE_DIR
 
 
-def create_undetected_chrome_driver():
+def create_undetected_chrome_driver(
+    create_profile: bool = True, headless: bool = False
+):
     options = ChromeOptions()
-    options.add_argument(f"--user-data-dir={CHROME_PROFILE_DIR}")
-    options.add_argument("--no-first-run")
-    options.add_argument("--no-default-browser-check")
+    if headless:
+        options.add_argument("--headless=new")
+    if create_profile:
+        options.add_argument(f"--user-data-dir={CHROME_PROFILE_DIR}")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+
     options.add_argument("--disable-extensions")
     driver = Chrome(options=options)
     driver.get("https://google.com")

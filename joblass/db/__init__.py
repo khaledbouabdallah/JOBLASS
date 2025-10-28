@@ -3,15 +3,20 @@ Database initialization and connection management
 """
 
 from .connection import close_db, get_db_connection, init_db, migrate_db
-from .models import Application, Job, Score
-from .repository import ApplicationRepository, JobRepository, ScoreRepository
-from .validators import (
+from .models import (
+    Application,
     CompanyOverview,
+    Job,
+    ReviewItem,
     ReviewSummary,
     SalaryEstimate,
+    Score,
     ScrapedJobData,
+    SearchCriteria,
+    SearchSession,
     SkillsList,
 )
+from .repository import ApplicationRepository, JobRepository, ScoreRepository
 
 __all__ = [
     "get_db_connection",
@@ -21,6 +26,8 @@ __all__ = [
     "Job",
     "Application",
     "Score",
+    "SearchCriteria",
+    "SearchSession",
     "JobRepository",
     "ApplicationRepository",
     "ScoreRepository",
@@ -28,5 +35,6 @@ __all__ = [
     "SalaryEstimate",
     "CompanyOverview",
     "ReviewSummary",
+    "ReviewItem",
     "SkillsList",
 ]
