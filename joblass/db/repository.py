@@ -369,14 +369,15 @@ class ApplicationRepository:
                 cursor.execute(
                     """
                     INSERT INTO applications (
-                        job_id, status, applied_date, last_updated,
+                        job_id, status, application_method, applied_date, last_updated,
                         cover_letter_path, notes, interview_date, interview_notes,
                         rejection_date, rejection_reason, offer_date
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         application.job_id,
                         application.status,
+                        application.application_method,
                         application.applied_date,
                         application.last_updated,
                         application.cover_letter_path,
