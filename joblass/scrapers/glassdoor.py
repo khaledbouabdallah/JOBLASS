@@ -4,7 +4,6 @@ import re
 import time
 from datetime import date, datetime
 from typing import Optional
-
 from pydantic import ValidationError
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
@@ -44,6 +43,22 @@ class GlassdoorScraper:
         self.driver.get(self.BASE_URL)
         human_delay()
 
+    def is_logged_in(self,driver: WebDriver) -> bool:
+        """Determine if user is logged in or not by the redirection from BASE_URL"""
+        wait = WebDriverWait(driver, 10)
+        current_page = wait.until(
+            lambda d: d.execute_script(
+                "return window.__GD_GLOBAL_NAV_DATA__?.appData?.id ?? null;"
+            ) is not None
+        )
+        current_page = driver.execute_script(
+            "return window.__GD_GLOBAL_NAV_DATA__?.appData?.id;"
+        )
+
+        logger.info(f"URL page leads to: {current_page}")
+  
+        return current_page != "signed-out-home-page"
+        
     def close_modal_if_present(self) -> bool:
         """Detect and close modal dialog if present"""
         try:
