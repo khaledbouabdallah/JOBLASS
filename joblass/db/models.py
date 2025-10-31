@@ -5,6 +5,7 @@ Data models for job search database using Pydantic
 import hashlib
 import json
 from datetime import datetime
+from enum import Enum
 from typing import Any, ClassVar, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -12,6 +13,19 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # ============================================================================
 # Nested/Helper Models (formerly in validators.py)
 # ============================================================================
+
+
+class CompanyTab(Enum):
+    """Available tabs on Glassdoor company profile"""
+
+    OVERVIEW = "overview"
+    REVIEWS = "reviews"
+    JOBS = "jobs"
+    SALARIES = "salaries"
+    INTERVIEWS = "interviews"
+    BENEFITS = "benefits"
+    PHOTOS = "photos"
+    DIVERSITY = "diversity"
 
 
 class ReviewItem(BaseModel):
@@ -188,7 +202,7 @@ class Job(BaseModel):
     reviews_data: Optional[str] = None
 
     # Raw data for future processing
-    raw_html: Optional[str] = None
+    raw_html: Optional[str] = None  # TODO remove
 
     model_config = {"validate_assignment": True}
 
@@ -283,7 +297,9 @@ class Application(BaseModel):
     status: Literal[
         "pending", "applied", "rejected", "interview", "offer", "declined", "accepted"
     ]
-
+    application_method: Literal[
+        "online_portal", "email", "referral", "in_person", "other"
+    ]
     id: Optional[int] = None
     applied_date: Optional[datetime] = None
     last_updated: datetime = Field(default_factory=datetime.now)
