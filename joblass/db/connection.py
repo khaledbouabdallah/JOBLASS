@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id INTEGER NOT NULL,
     status TEXT NOT NULL,
+    application_method TEXT NOT NULL,
     applied_date TIMESTAMP,
     last_updated TIMESTAMP NOT NULL,
     cover_letter_path TEXT,

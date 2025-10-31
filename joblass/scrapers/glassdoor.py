@@ -3,9 +3,10 @@ import logging
 import re
 import time
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
+
 from pydantic import ValidationError
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -22,6 +23,8 @@ from joblass.utils.selenium_helpers import (
     human_delay,
     human_move,
     human_scroll_to_element,
+    safe_browser_tab_switch,
+    scroll_until_visible,
     wait_for_element,
 )
 
@@ -404,6 +407,7 @@ class GlassdoorScraper:
             return value * 86400  # Assuming 'j' means days as well
         else:
             raise ValueError(f"Unknown time unit in job age: {unit}")
+        return 0  # Should never reach here due to ValueError, but satisfies mypy
 
     def _extract_job_header_info(self, element: WebElement) -> dict:
         # fromat: "XXd or XXh", can be 30j+
@@ -476,67 +480,61 @@ class GlassdoorScraper:
         summary: dict[str, list[dict[str, str | int]]] = {"pros": [], "cons": []}
 
         try:
-            # Find the review wrapper that contains both pros and cons
-            review_wrapper = self.driver.find_element(
-                By.CSS_SELECTOR, "div.JobDetails_reviewSummaryWrapper__eaFbQ"
+
+            review_wrapper_selector = "section[data-test='company-reviews']"
+            job_detail_container = wait_for_element(
+                self.driver,
+                By.CSS_SELECTOR,
+                "div.TwoColumnLayout_jobDetailsContainer__qyvJZ",
             )
 
-            # Extract Pros
-            try:
+            is_visible = scroll_until_visible(
+                self.driver, job_detail_container, review_wrapper_selector, timeout=15
+            )
 
-                # Find pros label and its parent div
-                pros_section = review_wrapper.find_element(
-                    By.CSS_SELECTOR, "span.JobDetails_reviewProsLabel__40LEp"
-                ).find_element(
-                    By.XPATH, ".."
-                )  # Go to parent div
-
-                # Find the ul list within the parent
-                pros_list = pros_section.find_element(
-                    By.CSS_SELECTOR, "ul.JobDetails_reviewBlurbList__ZtUjH"
+            if not is_visible:
+                logger.error(
+                    "Review summary section not visible after scrolling, either internet connection is slow or the chrome brwoser"
                 )
+                return summary
 
-                for item in pros_list.find_elements(By.TAG_NAME, "li"):
-                    # Pattern handles multiple formats:
-                    # French: "text" (dans X avis)
-                    # English: "text" (in X reviews) or just "text" (X)
-                    match = re.search(r'"([^"]+)"\s*\(.*?(\d+)', item.text)
-                    if match:
-                        summary["pros"].append(
-                            {"text": match.group(1), "count": int(match.group(2))}
-                        )
-            except NoSuchElementException:
-                logger.debug("Pros section not found")
-                pass
+            # Find the review wrapper that contains both pros and cons
+            review_wrapper = wait_for_element(
+                self.driver,
+                By.CSS_SELECTOR,
+                review_wrapper_selector,
+                timeout=3,
+            )
 
-            # Extract Cons
-            try:
-                # Find cons label and its parent div
-                cons_section = review_wrapper.find_element(
-                    By.CSS_SELECTOR, "span.JobDetails_reviewConsLabel__rua2F"
-                ).find_element(
-                    By.XPATH, ".."
-                )  # Go to parent div
+            pro_section, cons_section = review_wrapper.find_elements(
+                By.CSS_SELECTOR, "ul"
+            )
 
-                # Find the ul list within the parent
-                cons_list = cons_section.find_element(
-                    By.CSS_SELECTOR, "ul.JobDetails_reviewBlurbList__ZtUjH"
-                )
+            def extract_review_summry_item(
+                review_element: WebElement,
+            ) -> tuple[str, int]:
+                review, count_text = review_element.text.split('"')[1:]
+                review = review.strip()
+                # extract numbers from count_text
+                count = int("".join(filter(str.isdigit, count_text)))
+                return review, count
 
-                for item in cons_list.find_elements(By.TAG_NAME, "li"):
-                    # Pattern: "text" (dans X avis) or "text" (X reviews)
-                    match = re.search(r'"([^"]+)"\s*\([^0-9]*(\d+)', item.text)
-                    if match:
-                        summary["cons"].append(
-                            {"text": match.group(1), "count": int(match.group(2))}
-                        )
-            except NoSuchElementException:
-                logger.debug("Cons section not found")
-                pass
+            for review in pro_section.find_elements(By.CSS_SELECTOR, "li"):
+                review, count = extract_review_summry_item(review)
+                summary["pros"].append({"text": review, "count": count})
+                print(f"Found pro review: {review} (count: {count})")
+
+            for review in cons_section.find_elements(By.CSS_SELECTOR, "li"):
+                review, count = extract_review_summry_item(review)
+                summary["cons"].append({"text": review, "count": count})
+                print(f"Found con review: {review} (count: {count})")
 
             return summary
-        except Exception as e:
+        except (NoSuchElementException, TimeoutException) as e:
             logger.debug(f"Could not extract review summary: {str(e)}")
+            return summary
+        except Exception as e:
+            logger.debug(f"Unexpected error in extract_review_summary: {str(e)}")
             return summary
 
     def extract_salary_info(self) -> dict[str, str | int | None]:
@@ -590,7 +588,7 @@ class GlassdoorScraper:
                 "div.JobDetails_jobDetailsContainer__y9P3L",
             )
 
-            self._click_on_show_more_description()
+            # self._click_on_show_more_description()
 
             job_data["job_title"] = self._extract_job_title()
             job_data["company"] = self._extract_company()
@@ -681,6 +679,8 @@ class GlassdoorScraper:
             # TODO: implement extra filters
             # date posted, easy apply, salary estiamte, company rating, sort by relevance/date: db.models.SearchCriteria:
             # TODO: save search url, filters, keywords for future reference
+            # TODO implement max jobs limit
+            # TODO implement check if job exist in db before extracting details
 
             scraped_jobs: list[ScrapedJobData] = []
             current_job_index = 0
@@ -737,3 +737,473 @@ class GlassdoorScraper:
         except Exception as e:
             logger.error(f"Search workflow failed: {str(e)}", exc_info=True)
             return False
+
+    # =========== Company profile navigation ===========
+
+    def navigate_to_company_profile(self) -> bool:
+        """
+        Navigate to the company profile page from job details.
+
+        Returns:
+            bool: True if navigation successful, False otherwise
+        """
+        try:
+            # Wait for and find the employer profile link
+            company_link = wait_for_element(
+                self.driver,
+                By.CSS_SELECTOR,
+                "a.EmployerProfile_profileContainer__63w3R",
+                timeout=2,
+            )
+
+            # Get the href before clicking (for logging/verification)
+            company_url = company_link.get_attribute("href")
+            company_name = company_link.find_element(
+                By.CSS_SELECTOR, "h4.heading_Heading__aomVx"
+            ).text
+
+            logger.info(f"Navigating to {company_name} profile: {company_url}")
+
+            # Click to navigate
+            human_click(self.driver, company_link)
+            safe_browser_tab_switch(self.driver, -1)
+
+            return True
+
+        except (NoSuchElementException, TimeoutException):
+            logger.info("Company profile link not found, compnay has no profile")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to navigate to company profile: {e}", exc_info=True)
+            return False
+
+    def switch_company_tab(
+        self,
+        tab: Literal[
+            "overview",
+            "reviews",
+            "jobs",
+            "salaries",
+            "interviews",
+            "benefits",
+            "photos",
+            "diversity",
+        ],
+    ) -> bool:
+        """
+        Switch to a specific tab on company profile page.
+
+        Args:
+            tab: Tab name to switch to (e.g., "reviews", "jobs", "salaries")
+
+        Returns:
+            bool: True if tab switch successful, False otherwise
+
+        Example:
+            scraper.switch_company_tab("reviews")
+            scraper.switch_company_tab("salaries")
+        """
+        try:
+
+            control.wait_if_paused()
+            control.check_should_stop()
+
+            logger.info(f"Switching to '{tab}' tab")
+
+            # Find the tab container by ID
+            tab_element = wait_for_element(self.driver, By.ID, tab, timeout=5)
+
+            # Check if already selected
+            is_selected = tab_element.get_attribute("data-ui-selected") == "true"
+            if is_selected:
+                logger.debug(f"Tab '{tab}' already selected")
+                return True
+
+            # Click the tab
+            human_click(self.driver, tab_element)
+            WebDriverWait(self.driver, 10).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+
+            # Verify tab is now selected
+            tab_element = wait_for_element(self.driver, By.ID, tab, timeout=5)
+            is_selected = tab_element.get_attribute("data-ui-selected") == "true"
+
+            if is_selected:
+                logger.debug(f"Successfully switched to '{tab}' tab")
+                return True
+            else:
+                logger.warning(f"Tab '{tab}' clicked but not marked as selected")
+                return False
+
+        except InterruptedError as e:
+            logger.info(str(e))
+            return False
+        except NoSuchElementException:
+            logger.error(f"Tab '{tab}' not found on page")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to switch to tab '{tab}': {e}", exc_info=True)
+            return False
+
+    def extract_company_info(self) -> dict[str, str | None]:
+        """
+        Extract company overview information from profile page.
+
+        Returns:
+            dict: Company information with keys:
+                - website: Company website URL
+                - url: Current Glassdoor profile URL
+                - headquarters: Company location
+                - size: Employee count
+                - type: Company type
+                - founded: Year founded
+                - revenue: Revenue range
+                - industry: Industry/sector
+                - description: Company description
+        """
+        info: dict[str, str | None] = {
+            "website": None,
+            "url": None,
+            "headquarters": None,
+            "size": None,
+            "type": None,
+            "founded": None,
+            "revenue": None,
+            "industry": None,
+            "description": None,
+        }
+
+        try:
+            control.wait_if_paused()
+            control.check_should_stop()
+
+            # Wait for overview module
+            wait_for_element(
+                self.driver,
+                By.CSS_SELECTOR,
+                "div[data-test='employerOverviewModule']",
+                timeout=5,
+            )
+
+            info["url"] = self.driver.current_url
+
+            # Get all detail items
+            detail_items = self.driver.find_elements(
+                By.CSS_SELECTOR, "li.employer-overview_employerEntityContainer__RsMbe"
+            )
+
+            # Extract each field using a loop
+            fields = [
+                ("website", 0, "website"),
+                ("headquarters", 1, "text"),
+                ("size", 2, "text"),
+                ("type", 3, "text"),
+                ("founded", 4, "text"),
+                ("revenue", 5, "text"),
+                ("industry", 6, "industry"),
+            ]
+
+            for field_name, index, field_type in fields:
+                try:
+                    if field_type == "website":
+                        website_link = detail_items[index].find_element(
+                            By.CSS_SELECTOR, "a.employer-overview_websiteLink__vj3I0"
+                        )
+                        info[field_name] = website_link.get_attribute("href")
+                    elif field_type == "industry":
+                        industry_link = detail_items[index].find_element(
+                            By.CSS_SELECTOR,
+                            "a.employer-overview_employerOverviewLink__P8pxW",
+                        )
+                        info[field_name] = industry_link.text.strip()
+                    else:  # text
+                        info[field_name] = detail_items[index].text.strip()
+                except (IndexError, NoSuchElementException):
+                    pass
+
+            # Extract description separately
+            try:
+                description_element = self.driver.find_element(
+                    By.CSS_SELECTOR, "span[data-test='employerDescription']"
+                )
+                info["description"] = description_element.text.strip()
+            except NoSuchElementException:
+                logger.debug("Could not extract company description")
+
+            logger.info(f"Extracted company info from: {info['url']}")
+
+            return info
+
+        except InterruptedError as e:
+            logger.info(str(e))
+            return info
+        except Exception as e:
+            logger.error(f"Failed to extract company info: {e}", exc_info=True)
+            return info
+
+    def extract_company_evaluations(self) -> dict:
+        """Extract company evaluations"""
+        result: dict[str, float | int | None] = {
+            "global": None,
+            "reviews_count": None,
+            "recommend_to_friend": None,
+            "culture_and_values": None,
+            "diversity_equity_inclusion": None,
+            "work_life_balance": None,
+            "senior_management": None,
+            "compensation_and_benefits": None,
+            "career_opportunities": None,
+        }
+        # see_more_button = wait_for_element(driver, By.CSS_SELECTOR, "button[data-test='review-overview-insights-button']", timeout=2)
+        # human_click(driver, see_more_button)
+        result["global"] = float(
+            wait_for_element(
+                self.driver,
+                By.CSS_SELECTOR,
+                "div[data-test='rating-headline']",
+                timeout=2,
+            )
+            .find_element(By.CSS_SELECTOR, "p")
+            .text.replace(",", ".")
+        )
+        result["recommend_to_friend"] = float(
+            wait_for_element(
+                self.driver,
+                By.CSS_SELECTOR,
+                "p[data-test='recommendToFriend']",
+                timeout=2,
+            )
+            .text.split("%")[0]
+            .strip()
+        )
+        result["reviews_count"] = int(
+            wait_for_element(
+                self.driver, By.CSS_SELECTOR, "p[data-test='review-count']", timeout=2
+            )
+            .text.split()[0]
+            .replace("(", "")
+            .strip()
+        )
+
+        dirty_result = (
+            wait_for_element(
+                self.driver,
+                By.CSS_SELECTOR,
+                "div[data-test='industry-average-and-distribution']",
+                timeout=2,
+            )
+            .find_element(By.CSS_SELECTOR, "div:first-child")
+            .text.split("\n")
+        )
+        cleaned_result = [
+            dirty_result[i] for i in range(len(dirty_result)) if i % 2 == 1
+        ]
+        cleaned_result = [
+            float(element.strip().replace(",", ".")) for element in cleaned_result
+        ]
+
+        result["culture_and_values"] = cleaned_result[0]
+        result["diversity_equity_inclusion"] = cleaned_result[1]
+        result["work_life_balance"] = cleaned_result[2]
+        result["senior_management"] = cleaned_result[3]
+        result["compensation_and_benefits"] = cleaned_result[4]
+        result["career_opportunities"] = cleaned_result[5]
+        return result
+
+    def _extract_review_data(self, review_element: WebElement) -> dict:  # noqa: C901
+        """Extract review data from a review element"""
+        data: dict[str, str | float | bool | None] = {
+            "title": None,
+            "rating": None,
+            "date": None,
+            "role": None,
+            "is_current_employee": None,
+            "employee_oldness": None,
+            "pros": None,
+            "cons": None,
+            "does_recommend": None,
+            "does_approve_ceo": None,
+            "business_outlook": None,
+            "advice_to_management": None,
+        }
+
+        try:
+            # Extract title
+            try:
+                title_elem = review_element.find_element(
+                    By.CSS_SELECTOR, "h3[data-test='review-details-title'] span"
+                )
+                data["title"] = title_elem.text.strip()
+            except NoSuchElementException:
+                pass
+
+            # Extract rating
+            try:
+                rating_elem = review_element.find_element(
+                    By.CSS_SELECTOR, "span[data-test='review-rating-label']"
+                )
+                data["rating"] = float(rating_elem.text.replace(",", "."))
+            except NoSuchElementException:
+                pass
+
+            # Extract date
+            try:
+                date_elem = review_element.find_element(
+                    By.CSS_SELECTOR, "span.timestamp_reviewDate__dsF9n"
+                )
+                data["date"] = date_elem.text.strip()
+            except NoSuchElementException:
+                pass
+
+            # Extract role and employment status
+            try:
+                role_elem = review_element.find_element(
+                    By.CSS_SELECTOR, "span.review-avatar_avatarLabel__P15ey"
+                )
+                data["role"] = role_elem.text.strip()
+            except NoSuchElementException:
+                pass
+
+            # Extract employment status (current/former) and oldness
+            try:
+                status_elem = review_element.find_element(
+                    By.CSS_SELECTOR,
+                    "div[data-test='review-avatar-tag'] div.text-with-icon_LabelContainer__s0l4C",
+                )
+                status_text = status_elem.text.strip()
+
+                # Check if current or former employee
+                if "actuel" in status_text.lower() or "current" in status_text.lower():
+                    data["is_current_employee"] = True
+                elif "ancien" in status_text.lower() or "former" in status_text.lower():
+                    data["is_current_employee"] = False
+
+                # Extract employment duration (e.g., "plus de 3 an(s)" or "moins de 1 an")
+                data["employee_oldness"] = status_text
+
+            except NoSuchElementException:
+                pass
+
+            # Extract pros
+            try:
+                pros_elem = review_element.find_element(
+                    By.CSS_SELECTOR, "span[data-test='review-text-PROS']"
+                )
+                data["pros"] = pros_elem.text.strip()
+            except NoSuchElementException:
+                pass
+
+            # Extract cons
+            try:
+                cons_elem = review_element.find_element(
+                    By.CSS_SELECTOR, "span[data-test='review-text-CONS']"
+                )
+                data["cons"] = cons_elem.text.strip()
+            except NoSuchElementException:
+                pass
+
+            # Extract advice to management
+            try:
+                advice_elem = review_element.find_element(
+                    By.CSS_SELECTOR, "span[data-test='review-text-FEEDBACK']"
+                )
+                data["advice_to_management"] = advice_elem.text.strip()
+            except NoSuchElementException:
+                pass
+
+            # Extract recommendation, CEO approval, and business outlook
+            experience_containers = review_element.find_elements(
+                By.CSS_SELECTOR, "div.rating-icon_ratingContainer__9UoJ6"
+            )
+
+            for container in experience_containers:
+                try:
+                    label = (
+                        container.find_element(By.TAG_NAME, "span").text.strip().lower()
+                    )
+
+                    # Check the style class to determine positive/negative/neutral/no data
+                    classes = container.get_attribute("class")
+
+                    if "recommande" in label or "recommend" in label:
+                        if "positiveStyles" in classes:
+                            data["does_recommend"] = True
+                        elif "negativeStyles" in classes:
+                            data["does_recommend"] = False
+                        elif "noDataStyles" in classes or "neutralStyles" in classes:
+                            data["does_recommend"] = None
+
+                    elif "pdg" in label or "ceo" in label:
+                        if "positiveStyles" in classes:
+                            data["does_approve_ceo"] = True
+                        elif "negativeStyles" in classes:
+                            data["does_approve_ceo"] = False
+                        elif "noDataStyles" in classes or "neutralStyles" in classes:
+                            data["does_approve_ceo"] = None
+
+                    elif (
+                        "perspective" in label
+                        or "outlook" in label
+                        or "commerciale" in label
+                    ):
+                        if "positiveStyles" in classes:
+                            data["business_outlook"] = "positive"
+                        elif "negativeStyles" in classes:
+                            data["business_outlook"] = "negative"
+                        elif "neutralStyles" in classes:
+                            data["business_outlook"] = "neutral"
+                        elif "noDataStyles" in classes:
+                            data["business_outlook"] = None
+
+                except NoSuchElementException:
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error extracting review data: {e}")
+
+        return data
+
+    def extract_company_reviews(
+        self,
+        role: Optional[str] = None,
+        location: Optional[str] = None,
+        job_type: Optional[str] = None,
+        max_reviews: int = -1,
+    ) -> list[dict]:
+        """Extract company reviews"""
+        # TODO apply filters
+        # #TODO extracting from multiple pages (now limited to first 10 reviews, 1 page)
+        # TODO apply sort (by date, popularity)
+        results: list[dict] = []
+        if max_reviews == 0:
+            return []
+        review_elements = wait_for_element(
+            self.driver, By.CSS_SELECTOR, "div[data-test='reviews-list']", timeout=2
+        ).find_elements(By.TAG_NAME, "li")
+        for review_element in review_elements:
+            review_data = self._extract_review_data(review_element)
+            if review_data:
+                results.append(review_data)
+        return results
+
+    # TODO
+    def extract_company_salaries(self) -> list[dict]:
+        """Extract company salaries"""
+        raise NotImplementedError
+
+    # TODO
+    def extract_company_interviews(self) -> list[dict]:
+        """Extract company interviews"""
+        raise NotImplementedError
+
+    # TODO
+    def extract_company_benefits(self) -> list[dict]:
+        """Extract company benefits"""
+        raise NotImplementedError
+
+    def extract_company_page(self) -> dict:
+        """Extract complete company page data"""
+        raise NotImplementedError
+        # TODO: Implement full company page extraction
+        return {}
