@@ -109,9 +109,12 @@ class TestApplicationModel:
 
     def test_application_creation(self):
         """Test creating application"""
-        app = Application(job_id=1, status="applied")
+        app = Application(
+            job_id=1, status="applied", application_method="online_portal"
+        )
         assert app.job_id == 1
         assert app.status == "applied"
+        assert app.application_method == "online_portal"
         assert app.id is None
 
     def test_application_invalid_status(self):
@@ -121,9 +124,19 @@ class TestApplicationModel:
 
     def test_application_valid_statuses(self):
         """Test all valid statuses"""
-        valid_statuses = ["pending", "applied", "rejected", "interview", "offer"]
+        valid_statuses = [
+            "pending",
+            "applied",
+            "rejected",
+            "interview",
+            "offer",
+            "declined",
+            "accepted",
+        ]
         for status in valid_statuses:
-            app = Application(job_id=1, status=status)
+            app = Application(
+                job_id=1, status=status, application_method="online_portal"
+            )
             assert app.status == status
 
 
@@ -191,28 +204,33 @@ class TestJobRepository:
         assert job_id > 0
 
     def test_insert_duplicate_url_fails(self, temp_db):
-        """Test that inserting duplicate URL fails"""
+        """Test that inserting duplicate job_hash fails (not URL)"""
+        # Create two jobs with SAME title/company/location (same hash)
+        # but DIFFERENT URLs - should still be detected as duplicate
         job1 = Job(
             title="Developer",
             company="Corp1",
             location="Paris",
-            url="https://example.com/job/duplicate",
+            url="https://example.com/job/url-1",
             source="glassdoor",
         )
 
         job2 = Job(
-            title="Engineer",
-            company="Corp2",
-            location="Lyon",
-            url="https://example.com/job/duplicate",  # Same URL
-            source="glassdoor",
+            title="Developer",  # Same title
+            company="Corp1",  # Same company
+            location="Paris",  # Same location
+            url="https://example.com/job/url-2",  # Different URL (shouldn't matter)
+            source="glassdoor",  # Same source
         )
 
         job_id_1 = JobRepository.insert(job1)
         job_id_2 = JobRepository.insert(job2)
 
         assert job_id_1 is not None
-        assert job_id_2 is None  # Should fail
+        assert job_id_2 is None  # Should fail due to duplicate hash
+
+        # Verify both have the same hash
+        assert job1.job_hash == job2.job_hash
 
     def test_get_by_id(self, temp_db):
         """Test getting job by ID"""
@@ -430,7 +448,9 @@ class TestApplicationRepository:
         job_id = JobRepository.insert(job)
 
         # Create application
-        app = Application(job_id=job_id, status="applied")
+        app = Application(
+            job_id=job_id, status="applied", application_method="online_portal"
+        )
         app_id = ApplicationRepository.insert(app)
 
         assert app_id is not None
@@ -448,13 +468,19 @@ class TestApplicationRepository:
             )
         )
 
-        app = Application(job_id=job_id, status="interview", notes="First round")
+        app = Application(
+            job_id=job_id,
+            status="interview",
+            notes="First round",
+            application_method="email",
+        )
         ApplicationRepository.insert(app)
 
         retrieved = ApplicationRepository.get_by_job_id(job_id)
         assert retrieved is not None
         assert retrieved.status == "interview"
         assert retrieved.notes == "First round"
+        assert retrieved.application_method == "email"
 
     def test_get_by_status(self, temp_db):
         """Test getting applications by status"""
@@ -469,7 +495,11 @@ class TestApplicationRepository:
                     source="glassdoor",
                 )
             )
-            ApplicationRepository.insert(Application(job_id=job_id, status=status))
+            ApplicationRepository.insert(
+                Application(
+                    job_id=job_id, status=status, application_method="online_portal"
+                )
+            )
 
         applied = ApplicationRepository.get_by_status("applied")
         assert len(applied) == 2
@@ -489,7 +519,11 @@ class TestApplicationRepository:
             )
         )
 
-        ApplicationRepository.insert(Application(job_id=job_id, status="applied"))
+        ApplicationRepository.insert(
+            Application(
+                job_id=job_id, status="applied", application_method="online_portal"
+            )
+        )
 
         success = ApplicationRepository.update_status(
             job_id, "interview", "Scheduled for next week"
@@ -497,6 +531,7 @@ class TestApplicationRepository:
         assert success
 
         updated = ApplicationRepository.get_by_job_id(job_id)
+        assert updated is not None
         assert updated.status == "interview"
         assert updated.notes == "Scheduled for next week"
 
