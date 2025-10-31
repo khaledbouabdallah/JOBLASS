@@ -1,6 +1,7 @@
 import random
 import time
 
+from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -191,3 +192,74 @@ def highlight(element, duration=2, color="yellow", border="3px solid green"):
     #     except Exception:
     #         # Element might be gone or page changed
     #         pass
+
+
+def safe_browser_tab_switch(driver: WebDriver, index: int = -1):
+    driver.switch_to.window(driver.window_handles[index])
+    # wait for page to load
+    WebDriverWait(driver, 10).until(
+        lambda d: d.execute_script("return document.readyState") == "complete"
+    )
+
+
+def scroll_until_visible(
+    driver,
+    scroll_container,
+    target_selector,
+    step=300,
+    timeout=10,
+    continuous=True,
+):
+    """
+    Scrolls inside a container to make a target element visible.
+
+    Args:
+        driver: Selenium WebDriver instance.
+        scroll_container: The scrollable WebElement.
+        target_selector: CSS selector string of the target element to find.
+        step: Pixels to scroll per iteration.
+        delay: Wait time (seconds) between scrolls.
+        timeout: Max time (seconds) before stopping (only used if continuous=True).
+        continuous:
+            - True → keep scrolling until visible or timeout.
+            - False → scroll once and return True/False immediately.
+
+    Returns:
+        The target WebElement if found and visible, otherwise None.
+    """
+
+    def is_visible():
+        try:
+            el = driver.find_element("css selector", target_selector)
+            if el.is_displayed():
+                return el
+        except NoSuchElementException:
+            pass
+        return None
+
+    # --- Single scroll mode ---
+    if not continuous:
+        driver.execute_script(f"arguments[0].scrollBy(0, {step});", scroll_container)
+        delay = random.uniform(0.3, 1.0)
+        time.sleep(delay)
+        el = is_visible()
+        return el
+
+    # --- Continuous scroll mode ---
+    start_time = time.time()
+    while True:
+        # Timeout
+        if time.time() - start_time > timeout:
+            print("⏱️ Timeout reached (target not found).")
+            return None
+
+        # Check if visible
+        el = is_visible()
+        if el:
+            print("✅ Target element is visible!")
+            return el
+
+        # Scroll and wait
+        driver.execute_script(f"arguments[0].scrollBy(0, {step});", scroll_container)
+        delay = random.uniform(0.3, 1.0)
+        time.sleep(delay)

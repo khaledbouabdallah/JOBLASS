@@ -630,6 +630,3 @@ class ScoreRepository:
 
         # Pydantic handles validation and type conversion
         return Score.model_validate(data)
-
-
-# TODO search repository
