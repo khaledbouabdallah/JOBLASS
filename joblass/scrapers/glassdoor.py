@@ -52,16 +52,17 @@ class GlassdoorScraper:
         current_page = wait.until(
             lambda d: d.execute_script(
                 "return window.__GD_GLOBAL_NAV_DATA__?.appData?.id ?? null;"
-            ) is not None
+            )
+            is not None
         )
         current_page = self.driver.execute_script(
             "return window.__GD_GLOBAL_NAV_DATA__?.appData?.id;"
         )
 
         logger.info(f"URL page leads to: {current_page}")
-  
+
         return current_page != "signed-out-home-page"
-        
+
     def close_modal_if_present(self) -> bool:
         """Detect and close modal dialog if present"""
         try:
@@ -417,7 +418,7 @@ class GlassdoorScraper:
         job_external_id = element.get_attribute("data-jobid")
         return {
             "job_external_id": job_external_id,
-            "job_age": job_age,
+            "job_age": job_age // 86400,  # in days
             "job_published_date": date.fromtimestamp(job_published_date),
         }
 
@@ -679,7 +680,7 @@ class GlassdoorScraper:
             # TODO: implement extra filters
             # date posted, easy apply, salary estiamte, company rating, sort by relevance/date: db.models.SearchCriteria:
             # TODO: save search url, filters, keywords for future reference
-            # TODO implement max jobs limit
+            # TODO implement max jobs limit, start from i element
             # TODO implement check if job exist in db before extracting details
 
             scraped_jobs: list[ScrapedJobData] = []
@@ -717,9 +718,9 @@ class GlassdoorScraper:
 
                 # Add job info from header to job_data
                 if job_data:
-                    job_data.job_external_id = job_element_info.get("job_external_id")
-                    job_data.job_age = job_element_info.get("job_age")
-                    job_data.posted_date = job_element_info.get("job_published_date")
+                    job_data.job_external_id = job_element_info["job_external_id"]
+                    job_data.job_age = job_element_info["job_age"]
+                    job_data.posted_date = job_element_info["job_published_date"]
 
                 highlight(
                     job_element,

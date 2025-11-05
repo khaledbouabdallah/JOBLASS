@@ -39,8 +39,8 @@ class JobRepository:
                         is_easy_apply, job_external_id,
                         company_size, company_industry, company_sector,
                         company_founded, company_type, company_revenue,
-                        reviews_data, raw_html
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        reviews_data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         job.title,
@@ -70,7 +70,6 @@ class JobRepository:
                         job.company_type,
                         job.company_revenue,
                         job.reviews_data,
-                        job.raw_html,
                     ),
                 )
                 job_id = cursor.lastrowid

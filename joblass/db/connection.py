@@ -48,7 +48,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     company_type TEXT,
     company_revenue TEXT,
     reviews_data TEXT,
-    raw_html TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
