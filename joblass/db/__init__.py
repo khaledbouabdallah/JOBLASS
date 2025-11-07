@@ -16,7 +16,12 @@ from .models import (
     SearchSession,
     SkillsList,
 )
-from .repository import ApplicationRepository, JobRepository, ScoreRepository
+from .repository import (
+    ApplicationRepository,
+    JobRepository,
+    ScoreRepository,
+    SearchSessionRepository,
+)
 
 __all__ = [
     "get_db_connection",
@@ -31,6 +36,7 @@ __all__ = [
     "JobRepository",
     "ApplicationRepository",
     "ScoreRepository",
+    "SearchSessionRepository",
     "ScrapedJobData",
     "SalaryEstimate",
     "CompanyOverview",

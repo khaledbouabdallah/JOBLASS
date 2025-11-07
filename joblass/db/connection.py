@@ -48,8 +48,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     company_type TEXT,
     company_revenue TEXT,
     reviews_data TEXT,
+    session_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES search_sessions(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_hash ON jobs(job_hash);
@@ -58,6 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company);
 CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source);
 CREATE INDEX IF NOT EXISTS idx_jobs_scraped_date ON jobs(scraped_date);
 CREATE INDEX IF NOT EXISTS idx_jobs_external_id ON jobs(job_external_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id);
 """
 
 SCHEMA_APPLICATIONS = """
@@ -104,6 +107,25 @@ CREATE TABLE IF NOT EXISTS scores (
 
 CREATE INDEX IF NOT EXISTS idx_scores_job_id ON scores(job_id);
 CREATE INDEX IF NOT EXISTS idx_scores_total_score ON scores(total_score DESC);
+"""
+
+SCHEMA_SEARCH_SESSIONS = """
+CREATE TABLE IF NOT EXISTS search_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    search_criteria TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'glassdoor',
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    jobs_found INTEGER DEFAULT 0,
+    jobs_scraped INTEGER DEFAULT 0,
+    jobs_saved INTEGER DEFAULT 0,
+    jobs_skipped INTEGER DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_search_sessions_status ON search_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_search_sessions_created_at ON search_sessions(created_at DESC);
 """
 
 
@@ -171,7 +193,8 @@ def init_db(reset: bool = False) -> None:
     cursor = conn.cursor()
 
     try:
-        # Create tables
+        # Create tables (order matters - search_sessions must be created before jobs due to FK)
+        cursor.executescript(SCHEMA_SEARCH_SESSIONS)
         cursor.executescript(SCHEMA_JOBS)
         cursor.executescript(SCHEMA_APPLICATIONS)
         cursor.executescript(SCHEMA_SCORES)

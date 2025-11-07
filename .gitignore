@@ -4,9 +4,10 @@ __pycache__/
 *.pyc
 .vscode/
 .idea/
-*.egg-info/ 
+*.egg-info/
 playground.py
 chrome_user_data/
 logs/
 .github
 /data
+/examples
