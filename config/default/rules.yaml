@@ -1,0 +1,129 @@
+# ============================================================================
+# JOBLASS Advanced Rules (Optional)
+# ============================================================================
+# Add custom rules beyond the defaults
+# Most users don't need this file - defaults work fine
+
+# ============================================================================
+# CUSTOM PENALTY RULES
+# ============================================================================
+
+custom_penalties:
+  # Keyword-based penalties
+  - type: keyword
+    keywords:
+      en: [crypto, cryptocurrency, blockchain, web3]
+      fr: [crypto, cryptomonnaie, blockchain]
+    penalty: -25
+    reason: Not interested in crypto positions
+    enabled: true
+
+  - type: keyword
+    keywords:
+      en: [sales, cold calling, business development]
+      fr: [vente, prospection, développement commercial]
+    penalty: -30
+    reason: Not interested in sales roles
+    enabled: true
+
+  # Company-specific penalties (beyond blacklist)
+  - type: company_pattern
+    pattern: ".*consulting.*"      # Regex pattern
+    penalty: -20
+    reason: Consulting in company name
+    enabled: true
+
+  # Salary-based penalties
+  - type: salary_range
+    max_acceptable: 800            # Below this gets penalty
+    penalty: -40
+    reason: Salary below acceptable minimum
+    enabled: true
+
+  # Experience mismatch
+  - type: experience_gap
+    your_experience: 1             # Auto-filled from profile
+    max_gap: 2                     # Tolerate up to 2 years more
+    penalty: -20
+    reason: Experience requirement too high
+    enabled: true
+
+# ============================================================================
+# CUSTOM BONUS RULES
+# ============================================================================
+
+custom_bonuses:
+  # Keyword-based bonuses
+  - type: keyword
+    keywords:
+      en: [AI research, machine learning research, NLP research]
+      fr: [recherche IA, recherche ML]
+    bonus: 20
+    reason: Strong research focus
+    enabled: true
+
+  - type: keyword
+    keywords:
+      en: [startup, early stage, seed funded]
+      fr: [startup, jeune pousse]
+    bonus: 10
+    reason: Prefer startup environment
+    enabled: false              # Disabled by default
+
+  # Company rating bonuses
+  - type: rating_threshold
+    min_rating: 4.7
+    bonus: 20
+    reason: Exceptional company rating
+    enabled: true
+
+  # Location bonuses
+  - type: location
+    preferred_locations: [Paris, Lyon]
+    bonus: 5
+    reason: In preferred city
+    enabled: true
+
+# ============================================================================
+# CUSTOM FILTERS (REJECT JOBS)
+# ============================================================================
+
+# These are stricter than penalties - jobs are completely rejected
+reject_rules:
+  # Reject if keywords found
+  - type: keyword
+    keywords:
+      en: [unpaid, no compensation, volunteer]
+      fr: [non rémunéré, bénévole]
+    reason: Unpaid position
+    enabled: true
+
+  # Reject specific job types
+  - type: job_type
+    reject_types: [contract, freelance, consultant]
+    reason: Only looking for internship/full-time
+    enabled: false
+
+  # Reject if too far
+  - type: distance
+    max_distance_km: 100
+    allow_remote: true
+    reason: Too far from location
+    enabled: true
+
+# ============================================================================
+# RULE PROCESSING OPTIONS
+# ============================================================================
+
+processing:
+  # Should we stop processing after first rejection?
+  stop_on_reject: true
+
+  # Should we apply all matching penalties or stop at first?
+  accumulate_penalties: true
+
+  # Should we apply all matching bonuses?
+  accumulate_bonuses: true
+
+  # Log which rules triggered?
+  log_matches: true

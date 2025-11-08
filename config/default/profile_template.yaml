@@ -1,0 +1,119 @@
+# ============================================================================
+# JOBLASS User Profile
+# ============================================================================
+# Your skills, preferences, and requirements for job matching
+
+# Your experience level determines scoring mode
+# Options: internship, entry_level, mid_level, senior
+experience_level: internship
+years_experience: 1
+
+# ============================================================================
+# SKILLS
+# ============================================================================
+
+skills:
+  # Skills you already know
+  known:
+    - python
+    - pytorch
+    - scikit-learn
+    - pandas
+    - sql
+    - git
+    - docker
+
+  # Skills you want to learn (scored positively in jobs)
+  want_to_learn:
+    - rust
+    - kubernetes
+    - distributed_systems
+    - llm_fine_tuning
+    - mlops
+
+# ============================================================================
+# REQUIREMENTS
+# ============================================================================
+
+requirements:
+  # Hard requirements (jobs not meeting these are rejected)
+  min_monthly_salary: 1000    # In your currency
+  currency: EUR
+
+  # Accepted locations (or "Remote")
+  locations:
+    - Paris
+    - "Île-de-France"
+    - Remote
+
+  # Maximum distance from your location (km)
+  max_distance_km: 50
+
+  # Companies to automatically reject
+  company_blacklist:
+    - Capgemini
+    - Accenture
+    - Cognizant
+
+# ============================================================================
+# PREFERENCES (not hard requirements)
+# ============================================================================
+
+preferences:
+  # Preferred salary (not minimum)
+  target_salary: 1400
+
+  # Preferred work arrangement (in order)
+  work_arrangement:
+    - remote
+    - hybrid
+    - onsite
+
+  # Preferred company characteristics
+  company:
+    min_rating: 3.5           # Glassdoor rating
+    preferred_size: [20, 500] # Employee count range
+    avoid_consulting: true    # Avoid consulting companies
+
+  # For internships specifically
+  internship:
+    require_mentorship: true
+    prefer_conversion: true   # Prefer jobs mentioning CDI/full-time
+
+# ============================================================================
+# CUSTOM KEYWORDS
+# ============================================================================
+
+# Keywords that should affect scoring (optional)
+custom_keywords:
+  # Red flags (apply penalty)
+  penalties:
+    - keyword: crypto
+      points: -20
+      reason: Not interested in crypto/web3
+
+    - keyword: unpaid
+      points: -50
+      reason: Unpaid work not acceptable
+
+  # Positive signals (apply bonus)
+  bonuses:
+    - keyword: research
+      points: 15
+      reason: Interested in research positions
+
+    - keyword: open source
+      points: 10
+      reason: Value OSS contribution culture
+
+# ============================================================================
+# METADATA
+# ============================================================================
+
+# Your current location (for distance calculations)
+location:
+  city: Paris
+  coordinates: [48.8566, 2.3522]  # [latitude, longitude]
+
+# Languages you can work in
+languages: [en, fr]

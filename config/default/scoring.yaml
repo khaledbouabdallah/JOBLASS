@@ -1,0 +1,99 @@
+# ============================================================================
+# JOBLASS Scoring Configuration
+# ============================================================================
+# How different dimensions contribute to job scores
+# Only customize if you want different weights than mode defaults
+
+# ============================================================================
+# SCORING MODES
+# ============================================================================
+# Mode is set in profile.yaml (experience_level)
+# These are the default weights for each mode
+
+modes:
+  internship:
+    tech_match: 0.30
+    company_quality: 0.25
+    compensation: 0.15        # Lower priority for internships
+    learning_potential: 0.20  # Higher priority
+    conversion_potential: 0.10
+
+  entry_level:
+    tech_match: 0.32
+    company_quality: 0.28
+    compensation: 0.22
+    learning_potential: 0.12
+    career_growth: 0.06
+
+  mid_level:
+    tech_match: 0.35
+    company_quality: 0.30
+    compensation: 0.25
+    practical_factors: 0.10
+
+  senior:
+    tech_match: 0.28
+    company_quality: 0.25
+    compensation: 0.30
+    impact_potential: 0.12
+    team_leadership: 0.05
+
+# ============================================================================
+# CUSTOM WEIGHTS (optional)
+# ============================================================================
+# Uncomment and modify to override mode defaults
+# Must sum to 1.0
+
+# custom_weights:
+#   tech_match: 0.40          # Increase tech matching importance
+#   company_quality: 0.25
+#   compensation: 0.20        # Decrease salary importance
+#   learning_potential: 0.15
+
+# ============================================================================
+# SCORING PARAMETERS
+# ============================================================================
+
+# How to score tech stack matching
+tech_matching:
+  known_skills_weight: 0.6    # Weight for skills you already have
+  learning_skills_weight: 0.4 # Weight for skills you want to learn
+
+  # Minimum skill overlap to consider job relevant
+  min_overlap_ratio: 0.2      # At least 20% of required skills match
+
+# How to handle missing salary data
+missing_salary:
+  strategy: neutral           # neutral, penalty, or skip
+  neutral_score: 0.5          # Give 50% of max salary score if missing
+
+# Company rating scoring
+rating_tiers:
+  excellent: 4.5              # Companies with 4.5+ stars
+  good: 4.0                   # Companies with 4.0+ stars
+  acceptable: 3.5             # Companies with 3.5+ stars
+  # Below acceptable gets penalty
+
+# ============================================================================
+# PENALTIES & BONUSES
+# ============================================================================
+
+# Automatic penalties
+penalties:
+  buzzwords: -15              # For "rockstar", "ninja", "guru" etc.
+  vague_description: -10      # Description < 200 chars
+  experience_mismatch: -20    # Asks for 3+ years more than you have
+  poor_rating: -15            # Rating < 3.0
+  consulting_detected: -25    # Detected as consulting company
+
+# Automatic bonuses
+bonuses:
+  research_keywords: 15       # "R&D", "research", "publications"
+  mentorship_mentioned: 12    # Explicit mentorship
+  high_rating: 15             # Rating > 4.5
+  open_source: 10             # OSS contribution mentioned
+  remote_first: 10            # Remote-first culture
+
+# Maximum total adjustments
+max_penalty: -50              # Can't lose more than 50 points
+max_bonus: 40                 # Can't gain more than 40 points
