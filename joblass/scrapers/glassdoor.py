@@ -59,14 +59,14 @@ class ExtraFilters:
 
     def _close_dropdown(self):
         if not self._already_opened():
-            print("Dropdown already closed")
+            logger.debug("Dropdown already closed")
             return
         human_click(self.driver, self.open_close_dropdown)
 
     def _open_dropdown(self):
 
         if self._already_opened():
-            print("Dropdown already opened")
+            logger.debug("Dropdown already opened")
             return
 
         try:
@@ -223,7 +223,8 @@ class ExtraFilters:
                 logger.debug(f"Set {key} to {value}")
 
     def validate_and_close(self):
-        human_click(self.driver, self.confirm_button)
+        # human_click(self.driver, self.confirm_button)
+        self.confirm_button.click()
 
 
 class GlassdoorScraper:
