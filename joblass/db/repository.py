@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from joblass.db.connection import get_db_cursor
-from joblass.db.models import Application, Job, Score
+from joblass.db.models import Application, Job, Score, SearchSession
 from joblass.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -19,27 +19,34 @@ class JobRepository:
     @staticmethod
     def insert(job: Job) -> Optional[int]:
         """
-        Insert a new job into database
+        Insert a new job into database with URL-based deduplication.
 
         Args:
             job: Job object to insert
 
         Returns:
-            Job ID if successful, None otherwise
+            Job ID if successful, None if duplicate URL exists
+
+        Raises:
+            Exception: For database errors other than duplicates (e.g., connection errors)
+
+        Note:
+            Duplicates (IntegrityError) return None with a warning log.
+            Other database errors are raised to the caller for proper handling.
         """
         try:
             with get_db_cursor() as cursor:
                 cursor.execute(
                     """
                     INSERT INTO jobs (
-                        title, company, location, url, job_hash, source,
+                        title, company, location, url, source,
                         description, tech_stack, verified_skills, required_skills,
                         salary_min, salary_max, salary_median, salary_currency,
-                        posted_date, scraped_date, job_type, remote_option,
+                        posted_date, scraped_date, job_age, job_type, remote_option,
                         is_easy_apply, job_external_id,
                         company_size, company_industry, company_sector,
                         company_founded, company_type, company_revenue,
-                        reviews_data, raw_html
+                        reviews_data, session_id
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
@@ -47,7 +54,6 @@ class JobRepository:
                         job.company,
                         job.location,
                         job.url,
-                        job.job_hash,
                         job.source,
                         job.description,
                         job.tech_stack,
@@ -59,6 +65,7 @@ class JobRepository:
                         job.salary_currency,
                         job.posted_date,
                         job.scraped_date,
+                        job.job_age,
                         job.job_type,
                         job.remote_option,
                         job.is_easy_apply,
@@ -70,22 +77,28 @@ class JobRepository:
                         job.company_type,
                         job.company_revenue,
                         job.reviews_data,
-                        job.raw_html,
+                        job.session_id,
                     ),
                 )
                 job_id = cursor.lastrowid
                 logger.info(
-                    f"Inserted job: {job.title} at {job.company} (ID: {job_id}, hash: {job.job_hash})"
+                    f"✓ Inserted job: {job.title} at {job.company} (ID: {job_id}, URL: {job.url})"
                 )
                 return job_id
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as e:
+            # Duplicate URL - this is expected during scraping, return None gracefully
             logger.warning(
-                f"Job already exists (duplicate hash): {job.job_hash} - {job.title} at {job.company}"
+                f"Job already exists (duplicate URL): {job.url} - {job.title} at {job.company}"
             )
+            logger.debug(f"IntegrityError details: {e}")
             return None
         except Exception as e:
-            logger.error(f"Failed to insert job: {e}", exc_info=True)
-            return None
+            # Unexpected database error - log and re-raise for caller to handle
+            logger.error(
+                f"Database error inserting job {job.title} at {job.company}: {e}",
+                exc_info=True,
+            )
+            raise  # Re-raise the exception
 
     @staticmethod
     def get_by_id(job_id: int) -> Optional[Job]:
@@ -103,7 +116,7 @@ class JobRepository:
 
     @staticmethod
     def get_by_url(url: str) -> Optional[Job]:
-        """Get job by URL (for backward compatibility)"""
+        """Get job by URL (primary deduplication method)"""
         try:
             with get_db_cursor() as cursor:
                 cursor.execute("SELECT * FROM jobs WHERE url = ?", (url,))
@@ -116,55 +129,26 @@ class JobRepository:
             return None
 
     @staticmethod
-    def get_by_hash(job_hash: str) -> Optional[Job]:
-        """Get job by hash (primary deduplication method)"""
-        try:
-            with get_db_cursor() as cursor:
-                cursor.execute("SELECT * FROM jobs WHERE job_hash = ?", (job_hash,))
-                row = cursor.fetchone()
-                if row:
-                    return JobRepository._row_to_job(row)
-                return None
-        except Exception as e:
-            logger.error(f"Failed to fetch job by hash: {e}", exc_info=True)
-            return None
-
-    @staticmethod
-    def exists(
-        url: str | None = None, job: Job | None = None, job_hash: str | None = None
-    ) -> bool:
+    def exists(url: str | None = None, job: Job | None = None) -> bool:
         """
-        Check if job exists using multiple strategies
-
-        Priority order:
-        1. job_hash (if provided or can be generated from job)
-        2. job object (generates hash)
-        3. URL (legacy fallback)
+        Check if job exists by URL
 
         Args:
-            url: Job URL (legacy method)
-            job: Job object (generates hash for checking)
-            job_hash: Pre-computed job hash
+            url: Job URL (primary method)
+            job: Job object (extracts URL for checking)
 
         Returns:
             True if job exists in database
         """
-        # Priority 1: Use provided hash
-        if job_hash:
-            return JobRepository.get_by_hash(job_hash) is not None
-
-        # Priority 2: Generate hash from job object
-        if job:
-            generated_hash = job.generate_hash()
-            return JobRepository.get_by_hash(generated_hash) is not None
-
-        # Priority 3: Legacy URL-based check (least reliable)
+        # Priority 1: Use URL directly
         if url:
             return JobRepository.get_by_url(url) is not None
 
-        logger.warning(
-            "exists() called without url, job, or job_hash - returning False"
-        )
+        # Priority 2: Extract URL from job object
+        if job:
+            return JobRepository.get_by_url(job.url) is not None
+
+        logger.warning("exists() called without url or job - returning False")
         return False
 
     @staticmethod
@@ -266,10 +250,10 @@ class JobRepository:
                 cursor.execute(
                     """
                     UPDATE jobs SET
-                        title = ?, company = ?, location = ?, url = ?, job_hash = ?,
+                        title = ?, company = ?, location = ?, url = ?,
                         description = ?, tech_stack = ?, verified_skills = ?, required_skills = ?,
                         salary_min = ?, salary_max = ?, salary_median = ?, salary_currency = ?,
-                        posted_date = ?, job_type = ?, remote_option = ?,
+                        posted_date = ?, job_age = ?, job_type = ?, remote_option = ?,
                         is_easy_apply = ?, job_external_id = ?,
                         company_size = ?, company_industry = ?, company_sector = ?,
                         company_founded = ?, company_type = ?, company_revenue = ?,
@@ -282,7 +266,6 @@ class JobRepository:
                         job.company,
                         job.location,
                         job.url,
-                        job.job_hash,
                         job.description,
                         job.tech_stack,
                         job.verified_skills,
@@ -292,6 +275,7 @@ class JobRepository:
                         job.salary_median,
                         job.salary_currency,
                         job.posted_date,
+                        job.job_age,
                         job.job_type,
                         job.remote_option,
                         job.is_easy_apply,
@@ -631,3 +615,234 @@ class ScoreRepository:
 
         # Pydantic handles validation and type conversion
         return Score.model_validate(data)
+
+
+class SearchSessionRepository:
+    """Repository for search session tracking"""
+
+    @staticmethod
+    def insert(session: SearchSession) -> Optional[int]:
+        """
+        Create new search session
+
+        Args:
+            session: SearchSession object to insert
+
+        Returns:
+            Session ID if successful, None otherwise
+        """
+        try:
+            with get_db_cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO search_sessions (
+                        search_criteria, source, status,
+                        jobs_found, jobs_scraped, jobs_saved, jobs_skipped,
+                        error_message, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                    (
+                        session.search_criteria.to_json(),
+                        session.source,
+                        session.status,
+                        session.jobs_found,
+                        session.jobs_scraped,
+                        session.jobs_saved,
+                        session.jobs_skipped,
+                        session.error_message,
+                        session.created_at,
+                        session.updated_at,
+                    ),
+                )
+                session_id = cursor.lastrowid
+                logger.info(
+                    f"Created search session (ID: {session_id}): "
+                    f"{session.search_criteria.job_title} in {session.search_criteria.location}"
+                )
+                return session_id
+        except Exception as e:
+            logger.error(f"Failed to insert search session: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def update(session: SearchSession) -> bool:
+        """
+        Update existing search session
+
+        Args:
+            session: SearchSession object with updated data
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not session.id:
+            logger.error("Cannot update session without ID")
+            return False
+
+        try:
+            with get_db_cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE search_sessions SET
+                        status = ?,
+                        jobs_found = ?,
+                        jobs_scraped = ?,
+                        jobs_saved = ?,
+                        jobs_skipped = ?,
+                        error_message = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                """,
+                    (
+                        session.status,
+                        session.jobs_found,
+                        session.jobs_scraped,
+                        session.jobs_saved,
+                        session.jobs_skipped,
+                        session.error_message,
+                        session.updated_at,
+                        session.id,
+                    ),
+                )
+                logger.info(
+                    f"Updated search session {session.id}: "
+                    f"status={session.status}, saved={session.jobs_saved}/{session.jobs_scraped}"
+                )
+                return True
+        except Exception as e:
+            logger.error(f"Failed to update search session: {e}", exc_info=True)
+            return False
+
+    @staticmethod
+    def get_by_id(session_id: int) -> Optional[SearchSession]:
+        """Get search session by ID"""
+        try:
+            with get_db_cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM search_sessions WHERE id = ?", (session_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return SearchSessionRepository._row_to_session(row)
+                return None
+        except Exception as e:
+            logger.error(f"Failed to fetch session {session_id}: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def get_all(
+        limit: Optional[int] = None,
+        offset: int = 0,
+        status: Optional[str] = None,
+        order_by: str = "created_at DESC",
+    ) -> List[SearchSession]:
+        """
+        Get all search sessions with optional filtering
+
+        Args:
+            limit: Maximum number of results
+            offset: Number of results to skip
+            status: Filter by status ('in_progress', 'completed', 'failed')
+            order_by: SQL ORDER BY clause
+
+        Returns:
+            List of SearchSession objects
+        """
+        try:
+            query = "SELECT * FROM search_sessions"
+            params = []
+
+            if status:
+                query += " WHERE status = ?"
+                params.append(status)
+
+            query += f" ORDER BY {order_by}"
+
+            if limit:
+                query += " LIMIT ? OFFSET ?"
+                params.extend([str(limit), str(offset)])
+
+            with get_db_cursor() as cursor:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                return [SearchSessionRepository._row_to_session(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to fetch sessions: {e}", exc_info=True)
+            return []
+
+    @staticmethod
+    def get_jobs_by_session(session_id: int) -> List[Job]:
+        """
+        Get all jobs from a specific search session
+
+        Args:
+            session_id: Search session ID
+
+        Returns:
+            List of Job objects from that session
+        """
+        try:
+            with get_db_cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM jobs WHERE session_id = ? ORDER BY scraped_date DESC",
+                    (session_id,),
+                )
+                rows = cursor.fetchall()
+                return [JobRepository._row_to_job(row) for row in rows]
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch jobs for session {session_id}: {e}", exc_info=True
+            )
+            return []
+
+    @staticmethod
+    def count(status: Optional[str] = None) -> int:
+        """Count total sessions, optionally filtered by status"""
+        try:
+            query = "SELECT COUNT(*) FROM search_sessions"
+            params = []
+
+            if status:
+                query += " WHERE status = ?"
+                params.append(status)
+
+            with get_db_cursor() as cursor:
+                cursor.execute(query, params)
+                return cursor.fetchone()[0]
+        except Exception as e:
+            logger.error(f"Failed to count sessions: {e}", exc_info=True)
+            return 0
+
+    @staticmethod
+    def delete(session_id: int) -> bool:
+        """Delete search session by ID (jobs will have session_id set to NULL)"""
+        try:
+            with get_db_cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM search_sessions WHERE id = ?", (session_id,)
+                )
+                logger.info(f"Deleted search session ID {session_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to delete session: {e}", exc_info=True)
+            return False
+
+    @staticmethod
+    def _row_to_session(row: sqlite3.Row) -> SearchSession:
+        """Convert database row to SearchSession object using Pydantic"""
+        from joblass.db.models import SearchCriteria
+
+        data = dict(row)
+
+        # Parse JSON search criteria
+        if data.get("search_criteria"):
+            data["search_criteria"] = SearchCriteria.from_json(data["search_criteria"])
+
+        # Parse datetime fields
+        if data.get("created_at"):
+            data["created_at"] = datetime.fromisoformat(data["created_at"])
+        if data.get("updated_at"):
+            data["updated_at"] = datetime.fromisoformat(data["updated_at"])
+
+        # Pydantic handles validation and type conversion
+        return SearchSession.model_validate(data)

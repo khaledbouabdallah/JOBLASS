@@ -3,9 +3,9 @@
 ## Build/Lint/Test Commands
 - **Install**: `pip install -e .` (or `pip install -e ".[dev]"` for Jupyter)
 - **Init DB**: `python3 -c "from joblass.db import init_db; init_db()"`
-- **Run**: Import and execute directly in Python (no CLI yet)
-- **Test**: No test suite yet - manual testing only
-- **Lint**: No linters configured
+- **Run Tests**: `python3 tests/test_<module>.py` (individual) or `python3 -m pytest tests/` (all)
+- **Run Workflow**: Import and execute in Python - see `examples/` directory
+- **Lint**: No linters configured yet
 
 ## Code Style Guidelines
 
@@ -33,10 +33,19 @@
 - Foreign keys enabled: `PRAGMA foreign_keys = ON`
 
 ### Database Patterns
-- Repository pattern: All DB ops through `*Repository` classes
+- Repository pattern: All DB ops through `*Repository` classes (Job, Application, Score, SearchSession)
 - Context managers for connections: `get_db_cursor()` handles commit/rollback
-- Unique URL constraint on jobs table for deduplication
-- JSON strings for complex fields (tech_stack, penalties, etc.)
+- Deduplication via URL (unique constraint) - each job URL is unique
+- Jobs linked to SearchSession via `session_id` foreign key (ON DELETE SET NULL)
+- JSON strings for complex fields (search_criteria, tech_stack, reviews_data, etc.)
+- Use Pydantic models for validation before DB insertion
+
+### Workflow Patterns
+- **Orchestration layer**: `joblass/workflows/` coordinates scrapers (don't add workflow logic to scrapers)
+- **Session tracking**: All workflows create SearchSession with status tracking (in_progress/completed/failed)
+- **Save at end**: Scrape jobs first, save to DB after (separation of concerns)
+- **Statistics**: Track jobs_found, jobs_scraped, jobs_saved, jobs_skipped in session
+- **Filter exposure**: `workflow.get_available_filters()` exposes dynamic options for CLI/webapp
 
 ### Documentation
 - Docstrings with Args/Returns sections for public methods

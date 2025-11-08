@@ -24,8 +24,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     title TEXT NOT NULL,
     company TEXT NOT NULL,
     location TEXT NOT NULL,
-    url TEXT NOT NULL,
-    job_hash TEXT NOT NULL UNIQUE,
+    url TEXT NOT NULL UNIQUE,
     source TEXT NOT NULL,
     description TEXT,
     tech_stack TEXT,
@@ -37,6 +36,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     salary_currency TEXT DEFAULT 'EUR',
     posted_date TIMESTAMP,
     scraped_date TIMESTAMP NOT NULL,
+    job_age INTEGER DEFAULT 0,
     job_type TEXT,
     remote_option TEXT,
     is_easy_apply BOOLEAN,
@@ -48,17 +48,18 @@ CREATE TABLE IF NOT EXISTS jobs (
     company_type TEXT,
     company_revenue TEXT,
     reviews_data TEXT,
-    raw_html TEXT,
+    session_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES search_sessions(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_jobs_hash ON jobs(job_hash);
 CREATE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url);
 CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company);
 CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source);
 CREATE INDEX IF NOT EXISTS idx_jobs_scraped_date ON jobs(scraped_date);
 CREATE INDEX IF NOT EXISTS idx_jobs_external_id ON jobs(job_external_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id);
 """
 
 SCHEMA_APPLICATIONS = """
@@ -105,6 +106,25 @@ CREATE TABLE IF NOT EXISTS scores (
 
 CREATE INDEX IF NOT EXISTS idx_scores_job_id ON scores(job_id);
 CREATE INDEX IF NOT EXISTS idx_scores_total_score ON scores(total_score DESC);
+"""
+
+SCHEMA_SEARCH_SESSIONS = """
+CREATE TABLE IF NOT EXISTS search_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    search_criteria TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'glassdoor',
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    jobs_found INTEGER DEFAULT 0,
+    jobs_scraped INTEGER DEFAULT 0,
+    jobs_saved INTEGER DEFAULT 0,
+    jobs_skipped INTEGER DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_search_sessions_status ON search_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_search_sessions_created_at ON search_sessions(created_at DESC);
 """
 
 
@@ -172,7 +192,8 @@ def init_db(reset: bool = False) -> None:
     cursor = conn.cursor()
 
     try:
-        # Create tables
+        # Create tables (order matters - search_sessions must be created before jobs due to FK)
+        cursor.executescript(SCHEMA_SEARCH_SESSIONS)
         cursor.executescript(SCHEMA_JOBS)
         cursor.executescript(SCHEMA_APPLICATIONS)
         cursor.executescript(SCHEMA_SCORES)
@@ -240,7 +261,8 @@ def migrate_db() -> None:
             "reviews_data": "TEXT",
             "is_easy_apply": "BOOLEAN",
             "job_external_id": "TEXT",
-            "job_hash": "TEXT",
+            "job_age": "INTEGER DEFAULT 0",
+            "posted_date": "TIMESTAMP",
         }
 
         # Add missing columns
@@ -258,47 +280,6 @@ def migrate_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_jobs_external_id ON jobs(job_external_id)"
             )
             logger.info("Created index on job_external_id")
-
-        # Create index on job_hash if it was just added
-        if "job_hash" not in existing_columns and columns_added > 0:
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_hash ON jobs(job_hash)")
-            logger.info("Created index on job_hash")
-
-        # Populate job_hash for existing records
-        if "job_hash" not in existing_columns:
-            logger.info("Populating job_hash for existing records...")
-            cursor.execute(
-                "SELECT id, title, company, location, source, job_external_id FROM jobs WHERE job_hash IS NULL"
-            )
-            rows = cursor.fetchall()
-
-            from joblass.db.models import Job
-
-            for row in rows:
-                # Create temporary Job object to generate hash
-                temp_job = Job(
-                    id=row[0],
-                    title=row[1],
-                    company=row[2],
-                    location=row[3],
-                    url="http://temp.com",  # Dummy URL (not used for hash)
-                    source=row[4],
-                    job_external_id=row[5],
-                )
-                job_hash = temp_job.generate_hash()
-                cursor.execute(
-                    "UPDATE jobs SET job_hash = ? WHERE id = ?", (job_hash, row[0])
-                )
-
-            logger.info(f"Populated job_hash for {len(rows)} existing records")
-
-        # Remove UNIQUE constraint from URL (if needed - SQLite doesn't support DROP CONSTRAINT)
-        # We'll keep URL indexed but not unique, relying on job_hash instead
-        # Note: This requires recreating the table in SQLite, which is complex
-        # For now, we'll just warn if there's an issue
-        logger.info(
-            "Note: URL column still has UNIQUE constraint - new schema uses job_hash for uniqueness"
-        )
 
         conn.commit()
 

@@ -26,9 +26,204 @@ from joblass.utils.selenium_helpers import (
     safe_browser_tab_switch,
     scroll_until_visible,
     wait_for_element,
+    wait_page_loaded,
 )
 
 logger = setup_logger(__name__, level=logging.DEBUG)
+
+
+class ExtraFilters:
+    def __init__(self, driver):
+
+        self.driver = driver
+        self.actionchain = ActionChains(self.driver)
+
+        self.accordions_names_check_box = [
+            "is_easy_apply",
+            "is_remote",
+        ]
+
+        self.accordions_names_choice = []
+        self._open_dropdown()
+        self._get_options()
+
+    def _already_opened(self):
+        try:
+            self.dropdown = self.driver.find_element(
+                By.XPATH,
+                '//button[@data-test="expand-filters"]/following-sibling::div/div',
+            )
+            return True
+        except:  # noqa: E722
+            return False
+
+    def _close_dropdown(self):
+        if not self._already_opened():
+            print("Dropdown already closed")
+            return
+        human_click(self.driver, self.open_close_dropdown)
+
+    def _open_dropdown(self):
+
+        if self._already_opened():
+            print("Dropdown already opened")
+            return
+
+        try:
+            self.open_close_dropdown = self.driver.find_element(
+                By.CLASS_NAME, "SearchFiltersExpanded_filterMenuContainer__Ar0fV"
+            )
+
+            human_click(self.driver, self.open_close_dropdown)
+
+            self.dropdown = self.driver.find_element(
+                By.XPATH,
+                '//button[@data-test="expand-filters"]/following-sibling::div/div',
+            )
+        except NoSuchElementException:
+            logger.error("Could not find the dropdown element to open filters")
+            raise NoSuchElementException(  # noqa: B904
+                "Could not find the dropdown element to open filters"
+            )
+
+    def _get_options(self):
+
+        self.salary_range = self.get_salary_range()
+        self.parts = self.dropdown.find_elements(By.XPATH, "./div")
+
+        self.easy_apply_toggle = self.parts[1].find_element(By.TAG_NAME, "label")
+        self.remote_toggle = self.parts[2].find_element(By.TAG_NAME, "label")
+
+        # get buttons
+        self.clear_button = self.parts[-1].find_elements(By.TAG_NAME, "button")[0]
+        self.confirm_button = self.parts[-1].find_elements(By.TAG_NAME, "button")[1]
+
+        # accordions of choice
+        self.accordions_choice_options = {}
+        self.accordions_choice_elements = {}
+        for i, part in enumerate(self.parts[4:-1]):
+
+            human_delay(0.2, 0.5)
+            name = part.text.lower().strip()
+            self.accordions_names_choice.append(name)
+            part.click()
+
+            if i == 0:
+                options = ["+1", "+2", "+3", "+4"]
+            else:
+                options = [
+                    option.text.strip()
+                    for option in part.find_elements(By.TAG_NAME, "button")[1:]
+                    if option.text.strip()
+                ]  # first is the accordion text
+
+            self.accordions_choice_options[name] = options
+            self.accordions_choice_elements[name] = part
+
+    def choose_accordion_option(self, accordion_name, option_position):
+        if accordion_name not in self.accordions_names_choice:
+            raise ValueError(f"Invalid choice accordion name: {accordion_name}")
+        if option_position < 1 or option_position > len(
+            self.accordions_choice_options[accordion_name]
+        ):
+            raise ValueError(
+                f"Invalid option position {option_position} for accordion {accordion_name}"
+            )
+        accordion = self.accordions_choice_elements[accordion_name]
+        option_to_click = accordion.find_elements(By.TAG_NAME, "button")[
+            option_position + 1
+        ]  # first is the accordion text, +1 to start index at 1
+        human_click(self.driver, option_to_click)
+        return accordion_name, option_to_click.text.strip()
+
+    def get_salary_range(self):
+        min_val = self.dropdown.find_element(
+            By.CSS_SELECTOR, 'input[data-test="min-salary"]'
+        ).get_attribute("value")
+        max_val = self.dropdown.find_element(
+            By.CSS_SELECTOR, 'input[data-test="max-salary"]'
+        ).get_attribute("value")
+        return int(min_val), int(max_val)
+
+    def set_salary_range(self, min_salary: int, max_salary: int):
+        min_input = self.dropdown.find_element(
+            By.CSS_SELECTOR, 'input[data-test="min-salary"]'
+        )
+        max_input = self.dropdown.find_element(
+            By.CSS_SELECTOR, 'input[data-test="max-salary"]'
+        )
+
+        def _set_salary(element, value):
+            element.clear()
+            element.send_keys(str(value))
+
+        clear_and_type(max_input, self.actionchain, str(max_salary))
+        clear_and_type(min_input, self.actionchain, str(min_salary))
+        return self.get_salary_range()
+
+    def toggle_label(self, label_element: WebElement, desired_state: bool):
+        current_state = label_element.get_attribute("aria-pressed") == "true"
+        if current_state != desired_state:
+            human_click(self.driver, label_element)
+        return label_element.get_attribute("aria-pressed") == "true"
+
+    def apply_filters(self, filters: dict):  # noqa: C901
+
+        # validate filters
+        for key, value in filters.items():
+            if (
+                key
+                not in self.accordions_names_check_box
+                + self.accordions_names_choice
+                + ["salary_range"]
+            ):
+                logger.error(f"Unknown filter key: {key}, cannot apply filters.")
+                return
+            if value not in [True, False] and key in self.accordions_names_check_box:
+                logger.error(
+                    f"Invalid value for checkbox filter '{key}': {value}. Must be True or False."
+                )
+                return
+            if (
+                value not in self.accordions_choice_options.get(key, [])
+                and key in self.accordions_names_choice
+            ):
+                logger.error(
+                    f"Invalid value for choice filter '{key}': {value}. Available options: {self.accordions_choice_options.get(key, [])}"
+                )
+                return
+            if key == "salary_range":
+                if (
+                    not isinstance(value, (list, tuple))
+                    or len(value) != 2
+                    or not all(isinstance(v, int) for v in value)
+                ):
+                    logger.error(
+                        f"Invalid value for salary_range filter: {value}. Must be a tuple/list of two integers (min_salary, max_salary)."
+                    )
+                    return
+
+        # apply filters
+        for key, value in filters.items():
+            if key in self.accordions_names_check_box:
+                if key == "is_easy_apply":
+                    self.toggle_label(self.easy_apply_toggle, value)
+                    logger.debug("toggled easy apply")
+                elif key == "is_remote":
+                    self.toggle_label(self.remote_toggle, value)
+                    logger.debug("toggled remote")
+            elif key in self.accordions_names_choice:
+                options = self.accordions_choice_options[key]
+                option_position = options.index(value) + 1  # +1 to start index at 1
+                self.choose_accordion_option(key, option_position)
+                logger.debug(f"Set {key} to {value}")
+            elif key == "salary_range":
+                min_salary, max_salary = value
+                self.set_salary_range(min_salary, max_salary)
+                logger.debug(f"Set {key} to {value}")
+
+    def validate_and_close(self):
+        human_click(self.driver, self.confirm_button)
 
 
 class GlassdoorScraper:
@@ -52,16 +247,17 @@ class GlassdoorScraper:
         current_page = wait.until(
             lambda d: d.execute_script(
                 "return window.__GD_GLOBAL_NAV_DATA__?.appData?.id ?? null;"
-            ) is not None
+            )
+            is not None
         )
         current_page = self.driver.execute_script(
             "return window.__GD_GLOBAL_NAV_DATA__?.appData?.id;"
         )
 
         logger.info(f"URL page leads to: {current_page}")
-  
+
         return current_page != "signed-out-home-page"
-        
+
     def close_modal_if_present(self) -> bool:
         """Detect and close modal dialog if present"""
         try:
@@ -151,21 +347,23 @@ class GlassdoorScraper:
             return None
 
     def save_job_from_validated_data(
-        self, validated_data: ScrapedJobData
+        self, validated_data: ScrapedJobData, session_id: Optional[int] = None
     ) -> Optional[int]:
         """
-        Save job from Pydantic-validated data
+        Save job from Pydantic-validated data with URL-based deduplication.
 
         Args:
             validated_data: Validated ScrapedJobData instance
+            session_id: Optional search session ID to link job to
 
         Returns:
-            Job ID if successful, None otherwise
-        """
-        if JobRepository.exists(validated_data.url) and validated_data.url:
-            logger.info(f"Job already in database: {validated_data.url}")
-            return None
+            Job ID if successful, None if duplicate or save failed
 
+        Note:
+            Database enforces URL uniqueness. Duplicate URLs are caught by
+            JobRepository.insert() which returns None (logged as duplicate).
+            Other errors are logged with full traceback.
+        """
         try:
             # Convert validated Pydantic model to database dict
             db_dict = validated_data.to_db_dict()
@@ -186,6 +384,10 @@ class GlassdoorScraper:
                 salary_median=db_dict["salary_median"],
                 salary_currency=db_dict["salary_currency"],
                 scraped_date=db_dict["scraped_date"],
+                posted_date=db_dict.get("posted_date"),
+                job_age=validated_data.job_age,
+                is_easy_apply=db_dict.get("is_easy_apply"),
+                job_external_id=db_dict.get("job_external_id"),
                 company_size=db_dict["company_size"],
                 company_industry=db_dict["company_industry"],
                 company_sector=db_dict["company_sector"],
@@ -193,20 +395,55 @@ class GlassdoorScraper:
                 company_type=db_dict["company_type"],
                 company_revenue=db_dict["company_revenue"],
                 reviews_data=db_dict["reviews_data"],
+                session_id=session_id,
             )
 
+            # Let database handle uniqueness constraint
+            # JobRepository.insert() returns None for duplicates (logs as warning)
+            # or for other errors (logs as error)
             job_id = JobRepository.insert(job)
 
             if job_id:
                 logger.info(
-                    f"Saved validated job to database: {job.title} at {job.company} (ID: {job_id})"
+                    f"✓ Saved job to database: {job.title} at {job.company} (ID: {job_id})"
                 )
+            # If job_id is None, the error/warning was already logged by JobRepository
 
             return job_id
 
-        except Exception as e:
-            logger.error(f"Error saving validated job: {e}", exc_info=True)
+        except ValidationError as e:
+            # Pydantic validation error (shouldn't happen since data is pre-validated)
+            logger.error(f"Validation error creating Job object: {e}", exc_info=True)
             return None
+        except Exception as e:
+            # Unexpected error (not caught by JobRepository)
+            logger.error(
+                f"Unexpected error saving job {validated_data.job_title} at {validated_data.company}: {e}",
+                exc_info=True,
+            )
+            return None
+
+    def get_jobs_found_count(self) -> int:
+        """Extract total number of jobs found from search results page"""
+        try:
+            text = self.driver.find_element(
+                By.CSS_SELECTOR, "h1[data-test='search-title']"
+            ).text
+
+            # Match numbers with optional thousand separators (1,234 or 1234)
+            match = re.search(r"([\d,]+)", text)
+            if match:
+                # Remove commas and convert to int: "1,234" -> 1234
+                total_jobs = int(match.group(1).replace(",", ""))
+                logger.info(f"Found {total_jobs:,} total jobs")
+                return total_jobs
+
+            logger.warning("Could not extract job count from search results")
+            return 0
+
+        except Exception as e:
+            logger.error(f"Error extracting jobs found count: {str(e)}", exc_info=True)
+            return 0
 
     def fill_search_form(
         self, job_title: str, location: str, preferred_location: Optional[str] = None
@@ -223,14 +460,14 @@ class GlassdoorScraper:
             )
             human_move(self.driver, job_input)
             clear_and_type(job_input, self.action, job_title)
-            human_delay(0.5, 1.0)
+            human_delay(0.3, 0.8)
 
             location_input = wait_for_element(
                 self.driver, By.ID, "searchBar-location", timeout=3
             )
             human_move(self.driver, location_input)
             clear_and_type(location_input, self.action, location)
-            human_delay(1.0, 2.0)
+            human_delay(0.3, 0.8)
 
             suggestions_list = wait_for_element(
                 self.driver, By.ID, "searchBar-location-search-suggestions", timeout=5
@@ -264,20 +501,7 @@ class GlassdoorScraper:
                 return 0
 
             human_delay(0.3, 0.7)
-            text = self.driver.find_element(
-                By.CSS_SELECTOR, "h1[data-test='search-title']"
-            ).text
-
-            # Match numbers with optional thousand separators (1,234 or 1234)
-            match = re.search(r"([\d,]+)", text)
-            if match:
-                # Remove commas and convert to int: "1,234" -> 1234
-                total_jobs = int(match.group(1).replace(",", ""))
-                logger.info(f"Found {total_jobs:,} total jobs")
-                return total_jobs
-
-            logger.warning("Could not extract job count from search results")
-            return 0
+            return self.get_jobs_found_count()
 
         except InterruptedError as e:
             logger.info(str(e))
@@ -366,20 +590,21 @@ class GlassdoorScraper:
             )
             logger.debug("Standard Apply button detected")
         except NoSuchElementException:
-            # Easy apply job - we don't extract URL for these
-            logger.debug("Easy Apply button detected, skipping URL extraction")
-            return None, True
+            # Easy apply job
+            is_easy_apply = True
+            button = self.driver.find_element(
+                By.CSS_SELECTOR, "button[data-test='easyApply']"
+            )
 
         try:
-            button.click()
+            human_click(self.driver, button)
             logger.debug("Clicked apply button to open job posting")
             WebDriverWait(self.driver, 5).until(lambda d: len(d.window_handles) > 1)
             self.driver.switch_to.window(self.driver.window_handles[-1])
-            # wait for page to load
+            # Wait until URL is not empty or 'about:blank'
             WebDriverWait(self.driver, 10).until(
-                lambda d: d.execute_script("return document.readyState") == "complete"
+                lambda d: d.current_url not in ("", "about:blank")
             )
-            human_delay(0.5, 1)
             url = self.driver.current_url
             logger.debug(f"Extracted external job posting URL: {url}")
             self.driver.close()
@@ -389,7 +614,7 @@ class GlassdoorScraper:
             logger.debug(f"Failed to extract external URL: {e}")
             return None, None
 
-    def _parse_job_age_to_seconds(self, job_age: str) -> int:
+    def _parse_job_age_to_seconds(self, job_age: str) -> int | None:
         """Parse job age string to seconds.
         Example formats: "2d", "5h", "30j+"
         """
@@ -412,12 +637,17 @@ class GlassdoorScraper:
     def _extract_job_header_info(self, element: WebElement) -> dict:
         # fromat: "XXd or XXh", can be 30j+
         job_age = element.find_element(By.CSS_SELECTOR, "div[data-test='job-age']").text
-        job_age = self._parse_job_age_to_seconds(job_age)
-        job_published_date = time.time() - job_age
+        job_age_seconds = self._parse_job_age_to_seconds(job_age)
+
+        # Handle None case - if parsing fails, default to current time (0 days old)
+        if job_age_seconds is None:
+            job_age_seconds = 0
+
+        job_published_date = time.time() - job_age_seconds
         job_external_id = element.get_attribute("data-jobid")
         return {
             "job_external_id": job_external_id,
-            "job_age": job_age,
+            "job_age": job_age_seconds // 86400,  # in days
             "job_published_date": date.fromtimestamp(job_published_date),
         }
 
@@ -489,7 +719,7 @@ class GlassdoorScraper:
             )
 
             is_visible = scroll_until_visible(
-                self.driver, job_detail_container, review_wrapper_selector, timeout=15
+                self.driver, job_detail_container, review_wrapper_selector, timeout=5
             )
 
             if not is_visible:
@@ -522,12 +752,10 @@ class GlassdoorScraper:
             for review in pro_section.find_elements(By.CSS_SELECTOR, "li"):
                 review, count = extract_review_summry_item(review)
                 summary["pros"].append({"text": review, "count": count})
-                print(f"Found pro review: {review} (count: {count})")
 
             for review in cons_section.find_elements(By.CSS_SELECTOR, "li"):
                 review, count = extract_review_summry_item(review)
                 summary["cons"].append({"text": review, "count": count})
-                print(f"Found con review: {review} (count: {count})")
 
             return summary
         except (NoSuchElementException, TimeoutException) as e:
@@ -662,81 +890,103 @@ class GlassdoorScraper:
             logger.error(f"Error extracting and validating job: {e}", exc_info=True)
             return None
 
-    def search_jobs(
-        self, job_title: str, location: str, preferred_location: Optional[str] = None
-    ) -> list[ScrapedJobData] | bool:
-        """Complete job search workflow"""
+    def search_jobs(  # noqa: C901
+        self, jobs_found: int, max_jobs: Optional[int], skip_until: Optional[int]
+    ) -> list[ScrapedJobData]:
+        """Search for jobs on Glassdoor Loop through search results and extract job details."""
         try:
-            logger.info("=== Starting Glassdoor job search ===")
-            self.navigate_to_home()
-
-            jobs_found = self.fill_search_form(job_title, location, preferred_location)
-
-            if not jobs_found:
-                logger.error("Failed to fill search form")
-                return False
-
-            # TODO: implement extra filters
-            # date posted, easy apply, salary estiamte, company rating, sort by relevance/date: db.models.SearchCriteria:
-            # TODO: save search url, filters, keywords for future reference
-            # TODO implement max jobs limit
-            # TODO implement check if job exist in db before extracting details
 
             scraped_jobs: list[ScrapedJobData] = []
+
+            if max_jobs is not None:
+                jobs_found = min(jobs_found, max_jobs)
+
+            if not jobs_found:
+                logger.warning("Failed to fill search form")
+                return scraped_jobs
+
             current_job_index = 0
+            if skip_until:
+                current_job_index = skip_until
+                logger.info(f"Skipping to job index {skip_until}")
+
             jobs = self.driver.find_elements(
                 By.CSS_SELECTOR, "li[data-test='jobListing']"
             )
 
             while current_job_index < jobs_found:
-                control.wait_if_paused()
-                control.check_should_stop()
-                self.close_modal_if_present()
+                try:
+                    control.wait_if_paused()
+                    control.check_should_stop()
+                    self.close_modal_if_present()
 
-                if current_job_index >= len(jobs):
-                    load_more_jobs_button = self.driver.find_element(
-                        By.CSS_SELECTOR, "show-more-cta'load-more']"
-                    )
-                    if load_more_jobs_button.is_displayed():
-                        human_scroll_to_element(self.driver, load_more_jobs_button)
-                        human_click(self.driver, load_more_jobs_button)
-                        human_delay(1, 2)
-                        jobs = self.driver.find_elements(
-                            By.CSS_SELECTOR, "li[data-test='jobListing']"
+                    # if we reached the end of the currently loaded jobs, try to load more
+                    if current_job_index == len(jobs):
+
+                        load_more_jobs_button = self.driver.find_element(
+                            By.CSS_SELECTOR, 'button[data-test="load-more"]'
                         )
+
+                        if load_more_jobs_button.is_displayed():
+                            human_scroll_to_element(self.driver, load_more_jobs_button)
+                            human_click(self.driver, load_more_jobs_button)
+                            human_delay(0.2, 1)
+                            self.close_modal_if_present()
+                            jobs = self.driver.find_elements(
+                                By.CSS_SELECTOR, "li[data-test='jobListing']"
+                            )
+                        break
+
+                    job_element = jobs[current_job_index]
+                    job_element_info = self._extract_job_header_info(job_element)
+
+                    # check if job_element is visible
+                    if not job_element.is_displayed():
+                        human_scroll_to_element(self.driver, job_element)
+
+                    human_click(self.driver, job_element)
+                    human_delay(0.3, 1)
+                    job_data: ScrapedJobData | None = self.extract_and_validate_job()
+
+                    # Add job info from header to job_data
+                    if job_data:
+                        job_data.job_external_id = job_element_info["job_external_id"]
+                        job_data.job_age = job_element_info["job_age"]
+                        job_data.posted_date = job_element_info["job_published_date"]
+
+                    highlight(
+                        job_element,
+                        duration=0.5,
+                        color="lightgreen",
+                        border="2px solid green",
+                    )
+                    if job_data:
+                        scraped_jobs.append(job_data)
+                    current_job_index += 1
+                except InterruptedError as e:
+                    logger.info(str(e))
                     break
-                job_element = jobs[current_job_index]
-                job_element_info = self._extract_job_header_info(job_element)
-                # check if job_element is visible
-                if not job_element.is_displayed():
-                    human_scroll_to_element(self.driver, job_element)
+                except Exception as e:
 
-                human_click(self.driver, job_element)
-                human_delay(0.3, 1)
-                job_data = self.extract_and_validate_job()
-
-                # Add job info from header to job_data
-                if job_data:
-                    job_data.job_external_id = job_element_info.get("job_external_id")
-                    job_data.job_age = job_element_info.get("job_age")
-                    job_data.posted_date = job_element_info.get("job_published_date")
-
-                highlight(
-                    job_element,
-                    duration=0.5,
-                    color="lightgreen",
-                    border="2px solid green",
-                )
-                if job_data:
-                    scraped_jobs.append(job_data)
-                current_job_index += 1
+                    highlight(
+                        job_element,
+                        duration=0.5,
+                        color="salmon",
+                        border="2px solid red",
+                    )
+                    logger.error(
+                        f"Failed to process job at index {current_job_index}: {str(e)}",
+                        exc_info=True,
+                    )
+                    current_job_index += 1
+                    continue
 
             logger.info("=== Job search completed successfully ===")
             return scraped_jobs
 
         except Exception as e:
             logger.error(f"Search workflow failed: {str(e)}", exc_info=True)
-            return False
+            return scraped_jobs
 
     # =========== Company profile navigation ===========
 
@@ -821,9 +1071,7 @@ class GlassdoorScraper:
 
             # Click the tab
             human_click(self.driver, tab_element)
-            WebDriverWait(self.driver, 10).until(
-                lambda d: d.execute_script("return document.readyState") == "complete"
-            )
+            wait_page_loaded(self.driver)
 
             # Verify tab is now selected
             tab_element = wait_for_element(self.driver, By.ID, tab, timeout=5)
