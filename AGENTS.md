@@ -35,7 +35,7 @@
 ### Database Patterns
 - Repository pattern: All DB ops through `*Repository` classes (Job, Application, Score, SearchSession)
 - Context managers for connections: `get_db_cursor()` handles commit/rollback
-- Deduplication via `job_hash` (unique constraint) - checks job_external_id or title+company+location
+- Deduplication via URL (unique constraint) - each job URL is unique
 - Jobs linked to SearchSession via `session_id` foreign key (ON DELETE SET NULL)
 - JSON strings for complex fields (search_criteria, tech_stack, reviews_data, etc.)
 - Use Pydantic models for validation before DB insertion

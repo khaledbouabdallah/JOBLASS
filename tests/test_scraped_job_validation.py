@@ -201,49 +201,6 @@ def test_salary_estimate_validation():
     print("✓ SalaryEstimate validation works")
 
 
-def test_job_hash_generation():
-    """Verify job_hash is auto-generated in to_db_dict"""
-    scraped = ScrapedJobData(
-        job_title="DevOps Engineer",
-        company="CloudCo",
-        location="Toulouse",
-        url="https://cloud.com/job/123",
-    )
-
-    db_dict = scraped.to_db_dict()
-
-    assert "job_hash" in db_dict, "job_hash should be auto-generated"
-    assert isinstance(db_dict["job_hash"], str)
-    assert len(db_dict["job_hash"]) == 16, "job_hash should be 16-char hex string"
-
-    print("✓ job_hash auto-generated correctly")
-
-
-def test_duplicate_jobs_same_hash():
-    """Jobs with same core fields should generate same hash"""
-    job1 = ScrapedJobData(
-        job_title="Software Engineer",
-        company="TechCorp",
-        location="Paris",
-        url="https://example.com/job/1",
-    )
-
-    job2 = ScrapedJobData(
-        job_title="software engineer",  # Different case
-        company="TECHCORP",  # Different case
-        location="Paris",
-        url="https://example.com/job/2",  # Different URL
-    )
-
-    hash1 = job1.to_db_dict()["job_hash"]
-    hash2 = job2.to_db_dict()["job_hash"]
-
-    # Same title/company/location (case-insensitive) should give same hash
-    assert hash1 == hash2, "Jobs with same core fields should have same hash"
-
-    print("✓ Duplicate detection via hash works")
-
-
 if __name__ == "__main__":
     print("=" * 70)
     print("SCRAPEDJOBDATA VALIDATION TESTS")
@@ -271,12 +228,6 @@ if __name__ == "__main__":
     print()
 
     test_salary_estimate_validation()
-    print()
-
-    test_job_hash_generation()
-    print()
-
-    test_duplicate_jobs_same_hash()
     print()
 
     print("=" * 70)

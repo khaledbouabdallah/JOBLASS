@@ -1,11 +1,12 @@
 """Job search workflow orchestration"""
 
-from typing import Optional
+from typing import List, Optional
 
+from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 
 from joblass.db import (
-    JobRepository,
+    ScrapedJobData,
     SearchCriteria,
     SearchSession,
     SearchSessionRepository,
@@ -13,6 +14,7 @@ from joblass.db import (
 from joblass.scrapers.glassdoor import ExtraFilters, GlassdoorScraper
 from joblass.utils.control import control
 from joblass.utils.logger import setup_logger
+from joblass.utils.selenium_helpers import wait_for_element
 
 logger = setup_logger(__name__)
 
@@ -81,7 +83,10 @@ class JobSearchWorkflow:
             self.available_filters = self.filters.accordions_choice_options
             # Close the filter dropdown after getting options
             # self.filters._close_dropdown()
-            logger.info(f"Filter options loaded: {list(self.available_filters.keys())}")
+            if self.available_filters:
+                logger.info(
+                    f"Filter options loaded: {list(self.available_filters.keys())}"
+                )
 
         return jobs_found
 
@@ -109,18 +114,29 @@ class JobSearchWorkflow:
                 "Filters not initialized. Call fill_search_form() first."
             )
 
-        logger.info("Applying advanced filters...")
-        self.filters._open_dropdown()
-        self.filters.apply_filters(filters)
-        self.filters.validate_and_close()
-        logger.info("Advanced filters applied")
+        try:
+            logger.info("Applying advanced filters...")
+            self.filters._open_dropdown()
+            self.filters.apply_filters(filters)
+            self.filters.validate_and_close()
+            logger.info("Advanced filters applied")
+        except Exception as e:
+            logger.error(f"Error applying advanced filters: {e}")
+            self.filters.clear_button.click()
+            self.filters._close_dropdown()
+            raise e
+
+        # Wait for results to refresh
+        _ = wait_for_element(
+            self.driver, By.CSS_SELECTOR, "li[data-test='jobListing']", timeout=5
+        )
 
     def scrape_jobs(
         self,
         jobs_found: int,
         max_jobs: Optional[int] = None,
         skip_until: Optional[int] = None,
-    ) -> list:
+    ) -> List[ScrapedJobData]:
         """
         Scrape job listings from search results.
 
@@ -141,26 +157,31 @@ class JobSearchWorkflow:
             jobs_found=jobs_found, max_jobs=max_jobs, skip_until=skip_until
         )
 
-        if not scraped_jobs or scraped_jobs is False:
+        # search_jobs returns empty list on no results or interruption
+        if not scraped_jobs:
             logger.warning("No jobs scraped")
             return []
 
         return scraped_jobs
 
     def save_jobs_to_db(
-        self, scraped_jobs: list, session_id: Optional[int] = None
+        self, scraped_jobs: List[ScrapedJobData], session_id: Optional[int] = None
     ) -> dict[str, int]:
         """
-        Save scraped jobs to database with deduplication.
+        Save scraped jobs to database with URL-based deduplication.
 
         Args:
             scraped_jobs: List of validated ScrapedJobData instances
             session_id: Optional session ID to link jobs to
 
         Returns:
-            dict: Statistics with keys 'saved' and 'skipped'
+            dict: Statistics with keys 'saved' and 'skipped' and 'failed'
+
+        Note:
+            Deduplication is handled by save_job_from_validated_data() which checks
+            for duplicate URLs before inserting. Returns None for duplicates.
         """
-        stats = {"saved": 0, "skipped": 0}
+        stats = {"saved": 0, "skipped": 0, "failed": 0}
 
         if not scraped_jobs:
             return stats
@@ -170,22 +191,27 @@ class JobSearchWorkflow:
             control.wait_if_paused()
             control.check_should_stop()
 
-            # Check if already exists (logs info automatically)
-            if JobRepository.exists(job_data.url):
-                stats["skipped"] += 1
-                logger.debug(f"Skipping duplicate: {job_data.url}")
-                continue
+            try:
+                # Save job (deduplication handled internally by save_job_from_validated_data)
+                job_id = self.scraper.save_job_from_validated_data(
+                    job_data, session_id=session_id
+                )
 
-            # Save new job with session_id
-            job_id = self.scraper.save_job_from_validated_data(
-                job_data, session_id=session_id
-            )
-            if job_id:
-                stats["saved"] += 1
+                if job_id:
+                    stats["saved"] += 1
+                else:
+                    # job_id is None means duplicate or save failed
+                    stats["skipped"] += 1
+            except Exception as e:
+                logger.error(
+                    f"Error saving job {job_data.job_title} at {job_data.company}: {e}",
+                    exc_info=True,
+                )
+                stats["failed"] += 1
 
         logger.info(
             f"Database save complete: {stats['saved']}/{len(scraped_jobs)} "
-            f"jobs saved ({stats['skipped']} duplicates)"
+            f"jobs saved ({stats['skipped']} duplicates/failed)"
         )
         return stats
 
@@ -232,7 +258,7 @@ class JobSearchWorkflow:
             "jobs_scraped": 0,
             "jobs_saved": 0,
             "jobs_skipped": 0,
-            "session_id": None,
+            "session_id": 0,  # Changed from None to 0 to satisfy type checker
         }
 
         # Create SearchCriteria from inputs
@@ -275,7 +301,9 @@ class JobSearchWorkflow:
                 self.apply_advanced_filters(advanced_filters)
             else:
                 logger.info("No advanced filters to apply")
-                self.filters._close_dropdown()
+                # Only close dropdown if filters object exists
+                if self.filters is not None:
+                    self.filters._close_dropdown()
 
             # 3. Scrape jobs
             scraped_jobs = self.scrape_jobs(jobs_found, max_jobs, skip_until)

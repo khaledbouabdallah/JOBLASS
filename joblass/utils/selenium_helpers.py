@@ -56,8 +56,6 @@ def human_click(driver: WebDriver, element: WebElement):
     actions.pause(random.uniform(0.2, 0.5))
     actions.click()
     actions.perform()
-
-    human_delay(0.2, 0.5)
     logger.debug(f"Clicked element: {tag_name}")
 
 
@@ -202,6 +200,7 @@ def safe_browser_tab_switch(driver: WebDriver, index: int = -1):
     )
 
 
+# TODO: improve scrolling logic to detect end of scroll
 def scroll_until_visible(
     driver,
     scroll_container,
@@ -256,10 +255,32 @@ def scroll_until_visible(
         # Check if visible
         el = is_visible()
         if el:
-            print("✅ Target element is visible!")
             return el
 
         # Scroll and wait
         driver.execute_script(f"arguments[0].scrollBy(0, {step});", scroll_container)
         delay = random.uniform(0.3, 1.0)
         time.sleep(delay)
+
+
+def wait_page_loaded(driver: WebDriver, timeout: int = 5):
+    """
+    Wait until the page is fully loaded
+
+    Args:
+        driver: Selenium WebDriver instance
+        timeout: Maximum wait time in seconds
+    """
+    WebDriverWait(driver, timeout).until(
+        lambda d: d.execute_script("return document.readyState") == "complete"
+    )
+
+
+def text_has_changed(locator, old_text):
+    def _predicate(driver):
+        try:
+            return driver.find_element(*locator).text != old_text
+        except:  # noqa: E722
+            return False
+
+    return _predicate

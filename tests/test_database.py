@@ -216,10 +216,10 @@ class TestJobRepository:
         )
 
         job2 = Job(
-            title="Developer",  # Same title
-            company="Corp1",  # Same company
-            location="Paris",  # Same location
-            url="https://example.com/job/url-2",  # Different URL (shouldn't matter)
+            title="Developer1",  # diffrent title
+            company="Corp2",  # diffrent company
+            location="London",  # diffrent location
+            url="https://example.com/job/url-1",  # Different URL (shouldn't matter)
             source="glassdoor",  # Same source
         )
 
@@ -228,9 +228,6 @@ class TestJobRepository:
 
         assert job_id_1 is not None
         assert job_id_2 is None  # Should fail due to duplicate hash
-
-        # Verify both have the same hash
-        assert job1.job_hash == job2.job_hash
 
     def test_get_by_id(self, temp_db):
         """Test getting job by ID"""

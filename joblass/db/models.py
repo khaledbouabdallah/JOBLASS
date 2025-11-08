@@ -2,7 +2,6 @@
 Data models for job search database using Pydantic
 """
 
-import hashlib
 import json
 from datetime import datetime
 from enum import Enum
@@ -178,9 +177,6 @@ class Job(BaseModel):
     )
 
     # Optional fields
-    job_hash: Optional[str] = Field(
-        None, description="Unique hash for deduplication (auto-generated)"
-    )
     description: Optional[str] = None
     tech_stack: Optional[str] = None  # JSON string of all tech/skills
     verified_skills: Optional[str] = None  # JSON string of verified skills
@@ -221,43 +217,6 @@ class Job(BaseModel):
         if not v.startswith(("http://", "https://")):
             raise ValueError("URL must start with http:// or https://")
         return v
-
-    def generate_hash(self) -> str:
-        """
-        Generate unique hash for deduplication
-
-        Hash is based on:
-        1. job_external_id (if available) - most reliable
-        2. Normalized title + company + location (fallback)
-
-        Returns:
-            SHA256 hash string (first 16 chars for readability)
-        """
-
-        # Normalize text: lowercase, remove extra whitespace
-        def normalize(text: str) -> str:
-            return " ".join(text.lower().strip().split())
-
-        # Priority 1: Use external ID if available (most reliable)
-        if self.job_external_id:
-            hash_input = f"ext:{self.source}:{self.job_external_id}"
-        else:
-            # Priority 2: Title + Company + Location combination
-            # Normalize to handle minor variations (e.g., "ML Engineer" vs "ml engineer")
-            normalized_title = normalize(self.title)
-            normalized_company = normalize(self.company)
-            normalized_location = normalize(self.location)
-            hash_input = f"{normalized_title}|{normalized_company}|{normalized_location}|{self.source}"
-
-        # Generate SHA256 hash and take first 16 chars for readability
-        return hashlib.sha256(hash_input.encode("utf-8")).hexdigest()[:16]
-
-    @model_validator(mode="after")
-    def auto_generate_hash(self) -> "Job":
-        """Auto-generate job_hash if not provided"""
-        if not self.job_hash:
-            object.__setattr__(self, "job_hash", self.generate_hash())
-        return self
 
 
 class SearchCriteria(BaseModel):
@@ -308,7 +267,7 @@ class SearchCriteria(BaseModel):
         Returns:
             dict: Only advanced filters with non-None values
         """
-        filters = {}
+        filters: dict[str, bool | tuple[int, int] | str] = {}
 
         # Toggles
         if self.is_easy_apply:
@@ -575,36 +534,6 @@ class ScrapedJobData(BaseModel):
         """Get combined unique skills from verified and required"""
         return list(dict.fromkeys(self.verified_skills + self.required_skills))
 
-    def generate_hash(self) -> str:
-        """
-        Generate unique hash for deduplication
-
-        Hash is based on:
-        1. job_external_id (if available) - most reliable
-        2. Normalized title + company + location (fallback)
-
-        Returns:
-            SHA256 hash string (first 16 chars for readability)
-        """
-
-        # Normalize text: lowercase, remove extra whitespace
-        def normalize(text: str) -> str:
-            return " ".join(text.lower().strip().split())
-
-        # Priority 1: Use external ID if available (most reliable)
-        if self.job_external_id:
-            hash_input = f"ext:{self.source}:{self.job_external_id}"
-        else:
-            # Priority 2: Title + Company + Location combination
-            # Normalize to handle minor variations
-            normalized_title = normalize(self.job_title)
-            normalized_company = normalize(self.company)
-            normalized_location = normalize(self.location)
-            hash_input = f"{normalized_title}|{normalized_company}|{normalized_location}|{self.source}"
-
-        # Generate SHA256 hash and take first 16 chars for readability
-        return hashlib.sha256(hash_input.encode("utf-8")).hexdigest()[:16]
-
     def to_db_dict(self) -> Dict[str, Any]:
         """
         Convert to dictionary suitable for database insertion
@@ -623,7 +552,6 @@ class ScrapedJobData(BaseModel):
             "posted_date": self.posted_date,
             "is_easy_apply": self.is_easy_apply,
             "job_external_id": self.job_external_id,
-            "job_hash": self.generate_hash(),  # Auto-generate hash for deduplication
             # JSON-serialized fields
             "verified_skills": (
                 json.dumps(self.verified_skills) if self.verified_skills else None
