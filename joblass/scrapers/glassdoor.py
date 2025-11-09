@@ -59,14 +59,14 @@ class ExtraFilters:
 
     def _close_dropdown(self):
         if not self._already_opened():
-            print("Dropdown already closed")
+            logger.debug("Dropdown already closed")
             return
         human_click(self.driver, self.open_close_dropdown)
 
     def _open_dropdown(self):
 
         if self._already_opened():
-            print("Dropdown already opened")
+            logger.debug("Dropdown already opened")
             return
 
         try:
@@ -223,7 +223,8 @@ class ExtraFilters:
                 logger.debug(f"Set {key} to {value}")
 
     def validate_and_close(self):
-        human_click(self.driver, self.confirm_button)
+        # human_click(self.driver, self.confirm_button)
+        self.confirm_button.click()
 
 
 class GlassdoorScraper:
@@ -365,38 +366,8 @@ class GlassdoorScraper:
             Other errors are logged with full traceback.
         """
         try:
-            # Convert validated Pydantic model to database dict
-            db_dict = validated_data.to_db_dict()
-
-            # Create Job object from validated data
-            job = Job(
-                title=db_dict["title"],
-                company=db_dict["company"],
-                location=db_dict["location"],
-                url=db_dict["url"],
-                source=db_dict["source"],
-                description=db_dict["description"],
-                tech_stack=db_dict["tech_stack"],
-                verified_skills=db_dict["verified_skills"],
-                required_skills=db_dict["required_skills"],
-                salary_min=db_dict["salary_min"],
-                salary_max=db_dict["salary_max"],
-                salary_median=db_dict["salary_median"],
-                salary_currency=db_dict["salary_currency"],
-                scraped_date=db_dict["scraped_date"],
-                posted_date=db_dict.get("posted_date"),
-                job_age=validated_data.job_age,
-                is_easy_apply=db_dict.get("is_easy_apply"),
-                job_external_id=db_dict.get("job_external_id"),
-                company_size=db_dict["company_size"],
-                company_industry=db_dict["company_industry"],
-                company_sector=db_dict["company_sector"],
-                company_founded=db_dict["company_founded"],
-                company_type=db_dict["company_type"],
-                company_revenue=db_dict["company_revenue"],
-                reviews_data=db_dict["reviews_data"],
-                session_id=session_id,
-            )
+            # Convert validated Pydantic model to Job using new to_job_model()
+            job = validated_data.to_job_model(session_id=session_id)
 
             # Let database handle uniqueness constraint
             # JobRepository.insert() returns None for duplicates (logs as warning)

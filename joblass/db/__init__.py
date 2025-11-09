@@ -1,8 +1,8 @@
 """
-Database initialization and connection management
+Database initialization and connection management with SQLModel
 """
 
-from .connection import close_db, get_db_connection, init_db, migrate_db
+from .engine import close_engine, get_session, init_db
 from .models import (
     Application,
     CompanyOverview,
@@ -24,23 +24,25 @@ from .repository import (
 )
 
 __all__ = [
-    "get_db_connection",
+    # Engine functions
+    "get_session",
     "init_db",
-    "migrate_db",
-    "close_db",
+    "close_engine",
+    # Models
     "Job",
     "Application",
     "Score",
     "SearchCriteria",
     "SearchSession",
-    "JobRepository",
-    "ApplicationRepository",
-    "ScoreRepository",
-    "SearchSessionRepository",
     "ScrapedJobData",
     "SalaryEstimate",
     "CompanyOverview",
     "ReviewSummary",
     "ReviewItem",
     "SkillsList",
+    # Repositories
+    "JobRepository",
+    "ApplicationRepository",
+    "ScoreRepository",
+    "SearchSessionRepository",
 ]

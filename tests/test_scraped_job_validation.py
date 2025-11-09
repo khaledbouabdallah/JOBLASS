@@ -127,9 +127,9 @@ def test_to_db_dict_serializes_nested_objects():
     db_dict = scraped.to_db_dict()
 
     # Complex fields serialized as JSON strings
-    assert isinstance(db_dict["verified_skills"], str)
-    assert '"Python"' in db_dict["verified_skills"]
-    assert '"SQL"' in db_dict["verified_skills"]
+    assert isinstance(db_dict["tech_stack"], str)
+    assert '"Python"' in db_dict["tech_stack"]
+    assert '"SQL"' in db_dict["tech_stack"]
 
     # Nested salary object flattened to separate fields
     assert db_dict["salary_min"] == 40000
@@ -177,7 +177,7 @@ def test_to_db_dict_handles_empty_arrays():
     db_dict = scraped.to_db_dict()
 
     # Empty arrays return None (not serialized to JSON)
-    assert db_dict["verified_skills"] is None
+    assert db_dict["tech_stack"] is None
 
     print("✓ Empty arrays handled correctly")
 

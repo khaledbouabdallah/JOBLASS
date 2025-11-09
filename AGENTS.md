@@ -3,9 +3,9 @@
 ## Build/Lint/Test Commands
 - **Install**: `pip install -e .` (or `pip install -e ".[dev]"` for Jupyter)
 - **Init DB**: `python3 -c "from joblass.db import init_db; init_db()"`
-- **Run Tests**: `python3 tests/test_<module>.py` (individual) or `python3 -m pytest tests/` (all)
+- **Run Tests**: `uv run pytest tests/test_<module>.py` (individual) or `uv run pytest tests/` (all)
 - **Run Workflow**: Import and execute in Python - see `examples/` directory
-- **Lint**: No linters configured yet
+- **Lint**: black
 
 ## Code Style Guidelines
 
@@ -17,7 +17,6 @@
 ### Types & Naming
 - Python 3.10+ type hints required
 - snake_case for functions/variables, PascalCase for classes
-- Use dataclasses for data models with `__post_init__` validation
 - Optional fields use `Optional[T]` with sensible defaults
 
 ### Selenium Patterns

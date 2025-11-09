@@ -13,9 +13,7 @@ from joblass.db import (
     SearchCriteria,
     SearchSession,
     SearchSessionRepository,
-    init_db,
 )
-from joblass.db.connection import DB_DIR, DB_PATH
 
 
 def setup_test_db():
@@ -24,27 +22,34 @@ def setup_test_db():
     test_db = Path(tempfile.mkdtemp()) / "test_joblass.db"
 
     # Temporarily override DB_PATH
-    import joblass.db.connection as conn_module
+    import joblass.db.engine as engine_module
+    from sqlalchemy import create_engine
+    from sqlmodel import SQLModel
 
-    original_db_path = conn_module.DB_PATH
-    original_db_dir = conn_module.DB_DIR
+    original_path = engine_module.DB_PATH
+    original_engine = engine_module.engine
 
-    conn_module.DB_PATH = test_db
-    conn_module.DB_DIR = test_db.parent
+    engine_module.DB_PATH = test_db
+    engine_module.engine = create_engine(
+        f"sqlite:///{test_db}", connect_args={"check_same_thread": False}, echo=False
+    )
 
-    # Initialize test database
-    init_db()
+    # Initialize database
+    SQLModel.metadata.create_all(engine_module.engine)
 
-    return test_db, original_db_path, original_db_dir
+    return test_db, (original_path, original_engine), engine_module
 
 
-def teardown_test_db(test_db, original_db_path, original_db_dir):
+def teardown_test_db(test_db, originals, engine_module):
     """Cleanup test database"""
-    import joblass.db.connection as conn_module
+    original_path, original_engine = originals
 
-    # Restore original paths
-    conn_module.DB_PATH = original_db_path
-    conn_module.DB_DIR = original_db_dir
+    # Cleanup engine
+    engine_module.engine.dispose()
+
+    # Restore original path and engine
+    engine_module.DB_PATH = original_path
+    engine_module.engine = original_engine
 
     # Remove test database
     if test_db.exists():
@@ -71,12 +76,15 @@ def test_search_criteria_creation():
     assert criteria.is_easy_apply is True
     assert criteria.salary_min == 30000
 
-    # Test JSON serialization
-    json_str = criteria.to_json()
-    assert '"job_title": "ML Engineer"' in json_str
+    # Test Pydantic's built-in JSON serialization
+    json_str = criteria.model_dump_json(exclude_none=True)
+    assert (
+        '"job_title":"ML Engineer"' in json_str
+        or '"job_title": "ML Engineer"' in json_str
+    )
 
     # Test deserialization
-    criteria2 = SearchCriteria.from_json(json_str)
+    criteria2 = SearchCriteria.model_validate_json(json_str)
     assert criteria2.job_title == criteria.job_title
     assert criteria2.salary_min == criteria.salary_min
 
@@ -112,13 +120,13 @@ def test_search_session_creation():
     criteria = SearchCriteria(job_title="ML Engineer", location="Paris")
 
     session = SearchSession(
-        search_criteria=criteria,
+        search_criteria=criteria.model_dump(),
         source="glassdoor",
         status="in_progress",
         jobs_found=100,
     )
 
-    assert session.search_criteria.job_title == "ML Engineer"
+    assert session.search_criteria["job_title"] == "ML Engineer"
     assert session.source == "glassdoor"
     assert session.status == "in_progress"
     assert session.jobs_found == 100
@@ -130,7 +138,7 @@ def test_search_session_creation():
 def test_search_session_mark_completed():
     """Test marking session as completed"""
     criteria = SearchCriteria(job_title="Data Analyst", location="Marseille")
-    session = SearchSession(search_criteria=criteria, jobs_found=50)
+    session = SearchSession(search_criteria=criteria.model_dump(), jobs_found=50)
 
     session.mark_completed(jobs_scraped=45, jobs_saved=40, jobs_skipped=5)
 
@@ -144,7 +152,7 @@ def test_search_session_mark_completed():
 def test_search_session_mark_failed():
     """Test marking session as failed"""
     criteria = SearchCriteria(job_title="DevOps Engineer", location="Toulouse")
-    session = SearchSession(search_criteria=criteria)
+    session = SearchSession(search_criteria=criteria.model_dump())
 
     error_msg = "Network timeout after 30 seconds"
     session.mark_failed(error_msg)
@@ -156,14 +164,18 @@ def test_search_session_mark_failed():
 
 def test_search_session_repository_insert():
     """Test inserting search session into database"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, originals, engine_module = setup_test_db()
 
     try:
         criteria = SearchCriteria(
             job_title="Backend Developer", location="Bordeaux", is_easy_apply=True
         )
+        # SearchSession stores search_criteria as Dict - pass the model directly,
+        # repository will convert it automatically
         session = SearchSession(
-            search_criteria=criteria, source="glassdoor", jobs_found=75
+            search_criteria=criteria,
+            source="glassdoor",
+            jobs_found=75,
         )
 
         session_id = SearchSessionRepository.insert(session)
@@ -171,26 +183,27 @@ def test_search_session_repository_insert():
         assert session_id is not None
         assert session_id > 0
 
-        # Retrieve and verify
+        # Retrieve and verify - search_criteria is stored as dict
         retrieved = SearchSessionRepository.get_by_id(session_id)
         assert retrieved is not None
         assert retrieved.id == session_id
-        assert retrieved.search_criteria.job_title == "Backend Developer"
+        assert isinstance(retrieved.search_criteria, dict)
+        assert retrieved.search_criteria["job_title"] == "Backend Developer"
         assert retrieved.jobs_found == 75
         assert retrieved.status == "in_progress"
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, originals, engine_module)
 
 
 def test_search_session_repository_update():
     """Test updating search session"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, originals, engine_module = setup_test_db()
 
     try:
         # Create session
         criteria = SearchCriteria(job_title="Frontend Developer", location="Nice")
-        session = SearchSession(search_criteria=criteria, jobs_found=60)
+        session = SearchSession(search_criteria=criteria.model_dump(), jobs_found=60)
 
         session_id = SearchSessionRepository.insert(session)
         session.id = session_id
@@ -209,18 +222,20 @@ def test_search_session_repository_update():
         assert retrieved.jobs_skipped == 5
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, originals, engine_module)
 
 
 def test_search_session_repository_get_all():
     """Test retrieving all sessions"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, originals, engine_module = setup_test_db()
 
     try:
         # Create multiple sessions
         for i, job_title in enumerate(["Data Scientist", "ML Engineer", "DevOps"]):
             criteria = SearchCriteria(job_title=job_title, location="Paris")
-            session = SearchSession(search_criteria=criteria, jobs_found=i * 10)
+            session = SearchSession(
+                search_criteria=criteria.model_dump(), jobs_found=i * 10
+            )
             SearchSessionRepository.insert(session)
 
         # Get all sessions
@@ -236,17 +251,17 @@ def test_search_session_repository_get_all():
         assert len(completed_sessions) == 0  # All are in_progress
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, originals, engine_module)
 
 
 def test_job_session_foreign_key():
     """Test jobs linked to search session"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, originals, engine_module = setup_test_db()
 
     try:
         # Create search session
         criteria = SearchCriteria(job_title="Python Developer", location="Lille")
-        session = SearchSession(search_criteria=criteria, jobs_found=30)
+        session = SearchSession(search_criteria=criteria.model_dump(), jobs_found=30)
         session_id = SearchSessionRepository.insert(session)
 
         # Create jobs linked to session
@@ -268,21 +283,21 @@ def test_job_session_foreign_key():
         assert all(job.company.startswith("Company") for job in jobs)
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, originals, engine_module)
 
 
 def test_session_count():
     """Test counting sessions"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, originals, engine_module = setup_test_db()
 
     try:
         # Create sessions with different statuses
         criteria1 = SearchCriteria(job_title="Job1", location="City1")
-        session1 = SearchSession(search_criteria=criteria1)
+        session1 = SearchSession(search_criteria=criteria1.model_dump())
         session1_id = SearchSessionRepository.insert(session1)
 
         criteria2 = SearchCriteria(job_title="Job2", location="City2")
-        session2 = SearchSession(search_criteria=criteria2)
+        session2 = SearchSession(search_criteria=criteria2.model_dump())
         session2_id = SearchSessionRepository.insert(session2)
         session2.id = session2_id
         session2.mark_completed(10, 8, 2)
@@ -299,7 +314,7 @@ def test_session_count():
         assert completed == 1
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, originals, engine_module)
 
 
 if __name__ == "__main__":

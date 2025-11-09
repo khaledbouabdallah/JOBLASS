@@ -1,12 +1,14 @@
 """
-Database repository layer for CRUD operations
+Database repository layer for CRUD operations with SQLModel
 """
 
-import sqlite3
 from datetime import datetime
 from typing import List, Optional
 
-from joblass.db.connection import get_db_cursor
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import col, select
+
+from joblass.db.engine import get_session
 from joblass.db.models import Application, Job, Score, SearchSession
 from joblass.utils.logger import setup_logger
 
@@ -14,7 +16,7 @@ logger = setup_logger(__name__)
 
 
 class JobRepository:
-    """Repository for job operations"""
+    """Repository for job operations with SQLModel"""
 
     @staticmethod
     def insert(job: Job) -> Optional[int]:
@@ -35,57 +37,15 @@ class JobRepository:
             Other database errors are raised to the caller for proper handling.
         """
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO jobs (
-                        title, company, location, url, source,
-                        description, tech_stack, verified_skills, required_skills,
-                        salary_min, salary_max, salary_median, salary_currency,
-                        posted_date, scraped_date, job_age, job_type, remote_option,
-                        is_easy_apply, job_external_id,
-                        company_size, company_industry, company_sector,
-                        company_founded, company_type, company_revenue,
-                        reviews_data, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        job.title,
-                        job.company,
-                        job.location,
-                        job.url,
-                        job.source,
-                        job.description,
-                        job.tech_stack,
-                        job.verified_skills,
-                        job.required_skills,
-                        job.salary_min,
-                        job.salary_max,
-                        job.salary_median,
-                        job.salary_currency,
-                        job.posted_date,
-                        job.scraped_date,
-                        job.job_age,
-                        job.job_type,
-                        job.remote_option,
-                        job.is_easy_apply,
-                        job.job_external_id,
-                        job.company_size,
-                        job.company_industry,
-                        job.company_sector,
-                        job.company_founded,
-                        job.company_type,
-                        job.company_revenue,
-                        job.reviews_data,
-                        job.session_id,
-                    ),
-                )
-                job_id = cursor.lastrowid
+            with get_session() as session:
+                session.add(job)
+                session.commit()
+                session.refresh(job)
                 logger.info(
-                    f"✓ Inserted job: {job.title} at {job.company} (ID: {job_id}, URL: {job.url})"
+                    f"✓ Inserted job: {job.title} at {job.company} (ID: {job.id}, URL: {job.url})"
                 )
-                return job_id
-        except sqlite3.IntegrityError as e:
+                return job.id
+        except IntegrityError as e:
             # Duplicate URL - this is expected during scraping, return None gracefully
             logger.warning(
                 f"Job already exists (duplicate URL): {job.url} - {job.title} at {job.company}"
@@ -104,12 +64,8 @@ class JobRepository:
     def get_by_id(job_id: int) -> Optional[Job]:
         """Get job by ID"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
-                row = cursor.fetchone()
-                if row:
-                    return JobRepository._row_to_job(row)
-                return None
+            with get_session() as session:
+                return session.get(Job, job_id)
         except Exception as e:
             logger.error(f"Failed to fetch job {job_id}: {e}", exc_info=True)
             return None
@@ -118,12 +74,9 @@ class JobRepository:
     def get_by_url(url: str) -> Optional[Job]:
         """Get job by URL (primary deduplication method)"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute("SELECT * FROM jobs WHERE url = ?", (url,))
-                row = cursor.fetchone()
-                if row:
-                    return JobRepository._row_to_job(row)
-                return None
+            with get_session() as session:
+                statement = select(Job).where(Job.url == url)
+                return session.exec(statement).first()
         except Exception as e:
             logger.error(f"Failed to fetch job by URL: {e}", exc_info=True)
             return None
@@ -165,29 +118,32 @@ class JobRepository:
             limit: Maximum number of results
             offset: Number of results to skip
             source: Filter by source (e.g., 'glassdoor')
-            order_by: SQL ORDER BY clause
+            order_by: SQL ORDER BY clause (e.g., "scraped_date DESC")
 
         Returns:
             List of Job objects
         """
         try:
-            query = "SELECT * FROM jobs"
-            params = []
+            with get_session() as session:
+                statement = select(Job)
 
-            if source:
-                query += " WHERE source = ?"
-                params.append(source)
+                if source:
+                    statement = statement.where(Job.source == source)
 
-            query += f" ORDER BY {order_by}"
+                # Parse order_by string (simple version)
+                if "DESC" in order_by:
+                    field = order_by.replace(" DESC", "").strip()
+                    statement = statement.order_by(col(getattr(Job, field)).desc())
+                else:
+                    field = order_by.replace(" ASC", "").strip()
+                    statement = statement.order_by(col(getattr(Job, field)))
 
-            if limit:
-                query += " LIMIT ? OFFSET ?"
-                params.extend([str(limit), str(offset)])
+                if offset:
+                    statement = statement.offset(offset)
+                if limit:
+                    statement = statement.limit(limit)
 
-            with get_db_cursor() as cursor:
-                cursor.execute(query, params)
-                rows = cursor.fetchall()
-                return [JobRepository._row_to_job(row) for row in rows]
+                return list(session.exec(statement).all())
         except Exception as e:
             logger.error(f"Failed to fetch jobs: {e}", exc_info=True)
             return []
@@ -210,30 +166,27 @@ class JobRepository:
             List of matching Job objects
         """
         try:
-            conditions = []
-            params = []
+            with get_session() as session:
+                statement = select(Job)
 
-            if keyword:
-                conditions.append("(title LIKE ? OR description LIKE ?)")
-                params.extend([f"%{keyword}%", f"%{keyword}%"])
+                conditions = []
+                if keyword:
+                    conditions.append(
+                        (col(Job.title).contains(keyword))
+                        | (col(Job.description).contains(keyword))
+                    )
+                if company:
+                    conditions.append(col(Job.company).contains(company))
+                if location:
+                    conditions.append(col(Job.location).contains(location))
 
-            if company:
-                conditions.append("company LIKE ?")
-                params.append(f"%{company}%")
+                if conditions:
+                    # Combine all conditions with AND
+                    for condition in conditions:
+                        statement = statement.where(condition)
 
-            if location:
-                conditions.append("location LIKE ?")
-                params.append(f"%{location}%")
-
-            query = "SELECT * FROM jobs"
-            if conditions:
-                query += " WHERE " + " AND ".join(conditions)
-            query += " ORDER BY scraped_date DESC"
-
-            with get_db_cursor() as cursor:
-                cursor.execute(query, params)
-                rows = cursor.fetchall()
-                return [JobRepository._row_to_job(row) for row in rows]
+                statement = statement.order_by(col(Job.scraped_date).desc())
+                return list(session.exec(statement).all())
         except Exception as e:
             logger.error(f"Failed to search jobs: {e}", exc_info=True)
             return []
@@ -246,50 +199,10 @@ class JobRepository:
             return False
 
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE jobs SET
-                        title = ?, company = ?, location = ?, url = ?,
-                        description = ?, tech_stack = ?, verified_skills = ?, required_skills = ?,
-                        salary_min = ?, salary_max = ?, salary_median = ?, salary_currency = ?,
-                        posted_date = ?, job_age = ?, job_type = ?, remote_option = ?,
-                        is_easy_apply = ?, job_external_id = ?,
-                        company_size = ?, company_industry = ?, company_sector = ?,
-                        company_founded = ?, company_type = ?, company_revenue = ?,
-                        reviews_data = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """,
-                    (
-                        job.title,
-                        job.company,
-                        job.location,
-                        job.url,
-                        job.description,
-                        job.tech_stack,
-                        job.verified_skills,
-                        job.required_skills,
-                        job.salary_min,
-                        job.salary_max,
-                        job.salary_median,
-                        job.salary_currency,
-                        job.posted_date,
-                        job.job_age,
-                        job.job_type,
-                        job.remote_option,
-                        job.is_easy_apply,
-                        job.job_external_id,
-                        job.company_size,
-                        job.company_industry,
-                        job.company_sector,
-                        job.company_founded,
-                        job.company_type,
-                        job.company_revenue,
-                        job.reviews_data,
-                        job.id,
-                    ),
-                )
+            with get_session() as session:
+                job.updated_at = datetime.now()
+                session.add(job)
+                session.commit()
                 logger.info(f"Updated job ID {job.id}")
                 return True
         except Exception as e:
@@ -300,10 +213,14 @@ class JobRepository:
     def delete(job_id: int) -> bool:
         """Delete job by ID"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-                logger.info(f"Deleted job ID {job_id}")
-                return True
+            with get_session() as session:
+                job = session.get(Job, job_id)
+                if job:
+                    session.delete(job)
+                    session.commit()
+                    logger.info(f"Deleted job ID {job_id}")
+                    return True
+                return False
         except Exception as e:
             logger.error(f"Failed to delete job: {e}", exc_info=True)
             return False
@@ -312,34 +229,17 @@ class JobRepository:
     def count(source: Optional[str] = None) -> int:
         """Count total jobs, optionally filtered by source"""
         try:
-            query = "SELECT COUNT(*) FROM jobs"
-            params = []
+            with get_session() as session:
+                statement = select(Job)
+                if source:
+                    statement = statement.where(Job.source == source)
 
-            if source:
-                query += " WHERE source = ?"
-                params.append(source)
-
-            with get_db_cursor() as cursor:
-                cursor.execute(query, params)
-                return cursor.fetchone()[0]
+                # Use count() - SQLModel doesn't have a direct count, so we get all and len
+                results = session.exec(statement).all()
+                return len(results)
         except Exception as e:
             logger.error(f"Failed to count jobs: {e}", exc_info=True)
             return 0
-
-    @staticmethod
-    def _row_to_job(row: sqlite3.Row) -> Job:
-        """Convert database row to Job object using Pydantic"""
-        # Convert row to dict
-        data = dict(row)
-
-        # Parse datetime fields
-        if data.get("posted_date"):
-            data["posted_date"] = datetime.fromisoformat(data["posted_date"])
-        if data.get("scraped_date"):
-            data["scraped_date"] = datetime.fromisoformat(data["scraped_date"])
-
-        # Pydantic handles validation and type conversion
-        return Job.model_validate(data)
 
 
 class ApplicationRepository:
@@ -349,35 +249,14 @@ class ApplicationRepository:
     def insert(application: Application) -> Optional[int]:
         """Insert new application"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO applications (
-                        job_id, status, application_method, applied_date, last_updated,
-                        cover_letter_path, notes, interview_date, interview_notes,
-                        rejection_date, rejection_reason, offer_date
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        application.job_id,
-                        application.status,
-                        application.application_method,
-                        application.applied_date,
-                        application.last_updated,
-                        application.cover_letter_path,
-                        application.notes,
-                        application.interview_date,
-                        application.interview_notes,
-                        application.rejection_date,
-                        application.rejection_reason,
-                        application.offer_date,
-                    ),
-                )
-                app_id = cursor.lastrowid
+            with get_session() as session:
+                session.add(application)
+                session.commit()
+                session.refresh(application)
                 logger.info(
-                    f"Created application for job ID {application.job_id} (ID: {app_id})"
+                    f"Created application for job ID {application.job_id} (ID: {application.id})"
                 )
-                return app_id
+                return application.id
         except Exception as e:
             logger.error(f"Failed to insert application: {e}", exc_info=True)
             return None
@@ -386,12 +265,9 @@ class ApplicationRepository:
     def get_by_job_id(job_id: int) -> Optional[Application]:
         """Get application for a specific job"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute("SELECT * FROM applications WHERE job_id = ?", (job_id,))
-                row = cursor.fetchone()
-                if row:
-                    return ApplicationRepository._row_to_application(row)
-                return None
+            with get_session() as session:
+                statement = select(Application).where(Application.job_id == job_id)
+                return session.exec(statement).first()
         except Exception as e:
             logger.error(f"Failed to fetch application: {e}", exc_info=True)
             return None
@@ -400,13 +276,13 @@ class ApplicationRepository:
     def get_by_status(status: str) -> List[Application]:
         """Get all applications with specific status"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    "SELECT * FROM applications WHERE status = ? ORDER BY last_updated DESC",
-                    (status,),
+            with get_session() as session:
+                statement = (
+                    select(Application)
+                    .where(Application.status == status)
+                    .order_by(col(Application.last_updated).desc())
                 )
-                rows = cursor.fetchall()
-                return [ApplicationRepository._row_to_application(row) for row in rows]
+                return list(session.exec(statement).all())
         except Exception as e:
             logger.error(f"Failed to fetch applications: {e}", exc_info=True)
             return []
@@ -415,45 +291,24 @@ class ApplicationRepository:
     def update_status(job_id: int, status: str, notes: Optional[str] = None) -> bool:
         """Update application status"""
         try:
-            with get_db_cursor() as cursor:
-                update_fields = ["status = ?", "last_updated = ?"]
-                params = [status, datetime.now()]
-
-                if notes:
-                    update_fields.append("notes = ?")
-                    params.append(notes)
-
-                params.append(job_id)
-
-                cursor.execute(
-                    f"UPDATE applications SET {', '.join(update_fields)} WHERE job_id = ?",
-                    params,
-                )
-                logger.info(f"Updated application status for job {job_id} to {status}")
-                return True
+            with get_session() as session:
+                statement = select(Application).where(Application.job_id == job_id)
+                app = session.exec(statement).first()
+                if app:
+                    app.status = status
+                    app.last_updated = datetime.now()
+                    if notes:
+                        app.notes = notes
+                    session.add(app)
+                    session.commit()
+                    logger.info(
+                        f"Updated application status for job {job_id} to {status}"
+                    )
+                    return True
+                return False
         except Exception as e:
             logger.error(f"Failed to update application status: {e}", exc_info=True)
             return False
-
-    @staticmethod
-    def _row_to_application(row: sqlite3.Row) -> Application:
-        """Convert database row to Application object using Pydantic"""
-        # Convert row to dict
-        data = dict(row)
-
-        # Parse datetime fields
-        for field in [
-            "applied_date",
-            "last_updated",
-            "interview_date",
-            "rejection_date",
-            "offer_date",
-        ]:
-            if data.get(field):
-                data[field] = datetime.fromisoformat(data[field])
-
-        # Pydantic handles validation and type conversion
-        return Application.model_validate(data)
 
 
 class ScoreRepository:
@@ -463,35 +318,15 @@ class ScoreRepository:
     def insert(score: Score) -> Optional[int]:
         """Insert job score"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO scores (
-                        job_id, tech_match, learning_opportunity,
-                        company_quality, practical_factors, total_score,
-                        penalties, bonuses, scored_date, llm_analysis, red_flags
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        score.job_id,
-                        score.tech_match,
-                        score.learning_opportunity,
-                        score.company_quality,
-                        score.practical_factors,
-                        score.total_score,
-                        score.penalties,
-                        score.bonuses,
-                        score.scored_date,
-                        score.llm_analysis,
-                        score.red_flags,
-                    ),
-                )
-                score_id = cursor.lastrowid
+            with get_session() as session:
+                session.add(score)
+                session.commit()
+                session.refresh(score)
                 logger.info(
                     f"Inserted score for job {score.job_id}: {score.total_score}/100"
                 )
-                return score_id
-        except sqlite3.IntegrityError:
+                return score.id
+        except IntegrityError:
             logger.warning(
                 f"Score already exists for job {score.job_id}, updating instead"
             )
@@ -504,12 +339,9 @@ class ScoreRepository:
     def get_by_job_id(job_id: int) -> Optional[Score]:
         """Get score for a specific job"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute("SELECT * FROM scores WHERE job_id = ?", (job_id,))
-                row = cursor.fetchone()
-                if row:
-                    return ScoreRepository._row_to_score(row)
-                return None
+            with get_session() as session:
+                statement = select(Score).where(Score.job_id == job_id)
+                return session.exec(statement).first()
         except Exception as e:
             logger.error(f"Failed to fetch score: {e}", exc_info=True)
             return None
@@ -529,43 +361,16 @@ class ScoreRepository:
             List of (Score, Job) tuples ordered by total_score DESC
         """
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT s.*, j.*
-                    FROM scores s
-                    JOIN jobs j ON s.job_id = j.id
-                    WHERE s.total_score >= ?
-                    ORDER BY s.total_score DESC
-                    LIMIT ?
-                """,
-                    (min_score, limit),
+            with get_session() as session:
+                statement = (
+                    select(Score, Job)
+                    .join(Job, Score.job_id == Job.id)
+                    .where(Score.total_score >= min_score)
+                    .order_by(col(Score.total_score).desc())
+                    .limit(limit)
                 )
-
-                results = []
-                for row in cursor.fetchall():
-                    # Extract score fields
-                    score = Score(
-                        id=row["id"],
-                        job_id=row["job_id"],
-                        tech_match=row["tech_match"],
-                        learning_opportunity=row["learning_opportunity"],
-                        company_quality=row["company_quality"],
-                        practical_factors=row["practical_factors"],
-                        total_score=row["total_score"],
-                        penalties=row["penalties"],
-                        bonuses=row["bonuses"],
-                        scored_date=datetime.fromisoformat(row["scored_date"]),
-                        llm_analysis=row["llm_analysis"],
-                        red_flags=row["red_flags"],
-                    )
-
-                    # Extract job fields (skip first few columns that are score fields)
-                    job = JobRepository._row_to_job(row)
-
-                    results.append((score, job))
-
-                return results
+                results = session.exec(statement).all()
+                return list(results)
         except Exception as e:
             logger.error(f"Failed to fetch top scored jobs: {e}", exc_info=True)
             return []
@@ -574,47 +379,28 @@ class ScoreRepository:
     def update(score: Score) -> Optional[int]:
         """Update existing score"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE scores SET
-                        tech_match = ?, learning_opportunity = ?,
-                        company_quality = ?, practical_factors = ?, total_score = ?,
-                        penalties = ?, bonuses = ?, llm_analysis = ?, red_flags = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE job_id = ?
-                """,
-                    (
-                        score.tech_match,
-                        score.learning_opportunity,
-                        score.company_quality,
-                        score.practical_factors,
-                        score.total_score,
-                        score.penalties,
-                        score.bonuses,
-                        score.llm_analysis,
-                        score.red_flags,
-                        score.job_id,
-                    ),
-                )
-                logger.info(f"Updated score for job {score.job_id}")
-                return score.job_id
+            with get_session() as session:
+                statement = select(Score).where(Score.job_id == score.job_id)
+                existing = session.exec(statement).first()
+                if existing:
+                    existing.tech_match = score.tech_match
+                    existing.learning_opportunity = score.learning_opportunity
+                    existing.company_quality = score.company_quality
+                    existing.practical_factors = score.practical_factors
+                    existing.total_score = score.total_score
+                    existing.penalties = score.penalties
+                    existing.bonuses = score.bonuses
+                    existing.llm_analysis = score.llm_analysis
+                    existing.red_flags = score.red_flags
+                    existing.updated_at = datetime.now()
+                    session.add(existing)
+                    session.commit()
+                    logger.info(f"Updated score for job {score.job_id}")
+                    return score.job_id
+                return None
         except Exception as e:
             logger.error(f"Failed to update score: {e}", exc_info=True)
             return None
-
-    @staticmethod
-    def _row_to_score(row: sqlite3.Row) -> Score:
-        """Convert database row to Score object using Pydantic"""
-        # Convert row to dict
-        data = dict(row)
-
-        # Parse datetime fields
-        if data.get("scored_date"):
-            data["scored_date"] = datetime.fromisoformat(data["scored_date"])
-
-        # Pydantic handles validation and type conversion
-        return Score.model_validate(data)
 
 
 class SearchSessionRepository:
@@ -632,34 +418,23 @@ class SearchSessionRepository:
             Session ID if successful, None otherwise
         """
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO search_sessions (
-                        search_criteria, source, status,
-                        jobs_found, jobs_scraped, jobs_saved, jobs_skipped,
-                        error_message, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        session.search_criteria.to_json(),
-                        session.source,
-                        session.status,
-                        session.jobs_found,
-                        session.jobs_scraped,
-                        session.jobs_saved,
-                        session.jobs_skipped,
-                        session.error_message,
-                        session.created_at,
-                        session.updated_at,
-                    ),
+            # Convert SearchCriteria object to dict if needed
+            from joblass.db.models import SearchCriteria
+
+            if isinstance(session.search_criteria, SearchCriteria):
+                session.search_criteria = session.search_criteria.model_dump(
+                    exclude_none=True
                 )
-                session_id = cursor.lastrowid
+
+            with get_session() as db_session:
+                db_session.add(session)
+                db_session.commit()
+                db_session.refresh(session)
                 logger.info(
-                    f"Created search session (ID: {session_id}): "
-                    f"{session.search_criteria.job_title} in {session.search_criteria.location}"
+                    f"Created search session (ID: {session.id}): "
+                    f"source={session.source}, status={session.status}"
                 )
-                return session_id
+                return session.id
         except Exception as e:
             logger.error(f"Failed to insert search session: {e}", exc_info=True)
             return None
@@ -680,30 +455,10 @@ class SearchSessionRepository:
             return False
 
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE search_sessions SET
-                        status = ?,
-                        jobs_found = ?,
-                        jobs_scraped = ?,
-                        jobs_saved = ?,
-                        jobs_skipped = ?,
-                        error_message = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                """,
-                    (
-                        session.status,
-                        session.jobs_found,
-                        session.jobs_scraped,
-                        session.jobs_saved,
-                        session.jobs_skipped,
-                        session.error_message,
-                        session.updated_at,
-                        session.id,
-                    ),
-                )
+            with get_session() as db_session:
+                session.updated_at = datetime.now()
+                db_session.add(session)
+                db_session.commit()
                 logger.info(
                     f"Updated search session {session.id}: "
                     f"status={session.status}, saved={session.jobs_saved}/{session.jobs_scraped}"
@@ -717,14 +472,8 @@ class SearchSessionRepository:
     def get_by_id(session_id: int) -> Optional[SearchSession]:
         """Get search session by ID"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    "SELECT * FROM search_sessions WHERE id = ?", (session_id,)
-                )
-                row = cursor.fetchone()
-                if row:
-                    return SearchSessionRepository._row_to_session(row)
-                return None
+            with get_session() as db_session:
+                return db_session.get(SearchSession, session_id)
         except Exception as e:
             logger.error(f"Failed to fetch session {session_id}: {e}", exc_info=True)
             return None
@@ -749,23 +498,29 @@ class SearchSessionRepository:
             List of SearchSession objects
         """
         try:
-            query = "SELECT * FROM search_sessions"
-            params = []
+            with get_session() as db_session:
+                statement = select(SearchSession)
 
-            if status:
-                query += " WHERE status = ?"
-                params.append(status)
+                if status:
+                    statement = statement.where(SearchSession.status == status)
 
-            query += f" ORDER BY {order_by}"
+                # Parse order_by
+                if " " in order_by:
+                    field_name, direction = order_by.split()
+                    field = getattr(SearchSession, field_name)
+                    if direction.upper() == "DESC":
+                        statement = statement.order_by(col(field).desc())
+                    else:
+                        statement = statement.order_by(col(field))
+                else:
+                    field = getattr(SearchSession, order_by)
+                    statement = statement.order_by(col(field))
 
-            if limit:
-                query += " LIMIT ? OFFSET ?"
-                params.extend([str(limit), str(offset)])
+                statement = statement.offset(offset)
+                if limit:
+                    statement = statement.limit(limit)
 
-            with get_db_cursor() as cursor:
-                cursor.execute(query, params)
-                rows = cursor.fetchall()
-                return [SearchSessionRepository._row_to_session(row) for row in rows]
+                return list(db_session.exec(statement).all())
         except Exception as e:
             logger.error(f"Failed to fetch sessions: {e}", exc_info=True)
             return []
@@ -782,13 +537,13 @@ class SearchSessionRepository:
             List of Job objects from that session
         """
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    "SELECT * FROM jobs WHERE session_id = ? ORDER BY scraped_date DESC",
-                    (session_id,),
+            with get_session() as db_session:
+                statement = (
+                    select(Job)
+                    .where(Job.session_id == session_id)
+                    .order_by(col(Job.scraped_date).desc())
                 )
-                rows = cursor.fetchall()
-                return [JobRepository._row_to_job(row) for row in rows]
+                return list(db_session.exec(statement).all())
         except Exception as e:
             logger.error(
                 f"Failed to fetch jobs for session {session_id}: {e}", exc_info=True
@@ -799,16 +554,13 @@ class SearchSessionRepository:
     def count(status: Optional[str] = None) -> int:
         """Count total sessions, optionally filtered by status"""
         try:
-            query = "SELECT COUNT(*) FROM search_sessions"
-            params = []
+            with get_session() as db_session:
+                statement = select(SearchSession)
+                if status:
+                    statement = statement.where(SearchSession.status == status)
 
-            if status:
-                query += " WHERE status = ?"
-                params.append(status)
-
-            with get_db_cursor() as cursor:
-                cursor.execute(query, params)
-                return cursor.fetchone()[0]
+                results = db_session.exec(statement).all()
+                return len(results)
         except Exception as e:
             logger.error(f"Failed to count sessions: {e}", exc_info=True)
             return 0
@@ -817,32 +569,14 @@ class SearchSessionRepository:
     def delete(session_id: int) -> bool:
         """Delete search session by ID (jobs will have session_id set to NULL)"""
         try:
-            with get_db_cursor() as cursor:
-                cursor.execute(
-                    "DELETE FROM search_sessions WHERE id = ?", (session_id,)
-                )
-                logger.info(f"Deleted search session ID {session_id}")
-                return True
+            with get_session() as db_session:
+                session = db_session.get(SearchSession, session_id)
+                if session:
+                    db_session.delete(session)
+                    db_session.commit()
+                    logger.info(f"Deleted search session ID {session_id}")
+                    return True
+                return False
         except Exception as e:
             logger.error(f"Failed to delete session: {e}", exc_info=True)
             return False
-
-    @staticmethod
-    def _row_to_session(row: sqlite3.Row) -> SearchSession:
-        """Convert database row to SearchSession object using Pydantic"""
-        from joblass.db.models import SearchCriteria
-
-        data = dict(row)
-
-        # Parse JSON search criteria
-        if data.get("search_criteria"):
-            data["search_criteria"] = SearchCriteria.from_json(data["search_criteria"])
-
-        # Parse datetime fields
-        if data.get("created_at"):
-            data["created_at"] = datetime.fromisoformat(data["created_at"])
-        if data.get("updated_at"):
-            data["updated_at"] = datetime.fromisoformat(data["updated_at"])
-
-        # Pydantic handles validation and type conversion
-        return SearchSession.model_validate(data)

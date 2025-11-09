@@ -90,7 +90,7 @@ class JobSearchWorkflow:
 
         return jobs_found
 
-    def apply_advanced_filters(self, filters: dict) -> None:
+    def apply_advanced_filters(self, filters: dict) -> int:
         """
         Apply advanced filters to search results.
         Must be called after fill_search_form().
@@ -130,6 +130,8 @@ class JobSearchWorkflow:
         _ = wait_for_element(
             self.driver, By.CSS_SELECTOR, "li[data-test='jobListing']", timeout=5
         )
+
+        return self.scraper.get_jobs_found_count()
 
     def scrape_jobs(
         self,
