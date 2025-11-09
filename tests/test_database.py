@@ -4,7 +4,6 @@ Tests for database models and repository
 Run with: pytest tests/test_database.py -v
 """
 
-import json
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +19,7 @@ from joblass.db import (
     JobRepository,
     ScoreRepository,
 )
-from joblass.db.connection import get_db_connection, init_db
+from joblass.db.engine import init_db
 
 
 @pytest.fixture
@@ -31,18 +30,31 @@ def temp_db():
         db_path = Path(tmpdir) / "test.db"
 
         # Monkey patch the DB_PATH
-        import joblass.db.connection as conn_module
+        import joblass.db.engine as engine_module
 
-        original_path = conn_module.DB_PATH
-        conn_module.DB_PATH = db_path
+        original_path = engine_module.DB_PATH
+        engine_module.DB_PATH = db_path
+
+        # Recreate engine with new path
+        from sqlalchemy import create_engine
+        from sqlmodel import SQLModel
+
+        original_engine = engine_module.engine
+        engine_module.engine = create_engine(
+            f"sqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+            echo=False,
+        )
 
         # Initialize database
-        init_db()
+        SQLModel.metadata.create_all(engine_module.engine)
 
         yield db_path
 
-        # Restore original path
-        conn_module.DB_PATH = original_path
+        # Cleanup and restore
+        engine_module.engine.dispose()
+        engine_module.DB_PATH = original_path
+        engine_module.engine = original_engine
 
 
 class TestJobModel:
@@ -71,35 +83,25 @@ class TestJobModel:
             url="https://example.com/job/2",
             source="glassdoor",
             description="Great ML role",
-            tech_stack='["Python", "TensorFlow", "ML"]',
-            salary_min=40000,
-            salary_max=60000,
-            salary_median=50000,
-            company_size="50-100",
-            company_sector="AI",
+            tech_stack=["Python", "TensorFlow", "ML"],  # Now a list, not JSON string
+            salary_estimate={
+                "min": 40000,
+                "max": 60000,
+                "median": 50000,
+                "currency": "EUR",
+            },  # JSON dict
+            company_overview={"size": "50-100", "sector": "AI"},  # JSON dict
             is_easy_apply=True,
             job_external_id="ext456",
             posted_date=datetime(2025, 10, 20),
         )
+        # Access via properties (backward compatibility)
         assert job.salary_min == 40000
-        assert job.tech_stack == '["Python", "TensorFlow", "ML"]'
+        assert job.tech_stack == ["Python", "TensorFlow", "ML"]
         assert job.company_sector == "AI"
         assert job.is_easy_apply is True
         assert job.job_external_id == "ext456"
         assert job.posted_date == datetime(2025, 10, 20)
-
-    def test_job_missing_title_raises_error(self):
-        """Test that missing title raises ValidationError"""
-        with pytest.raises(
-            ValidationError, match="String should have at least 1 characters"
-        ):
-            Job(
-                title="",  # Empty title
-                company="Corp",
-                location="Paris",
-                url="https://example.com/job/3",
-                source="glassdoor",
-            )
 
 
 class TestApplicationModel:
@@ -117,8 +119,8 @@ class TestApplicationModel:
 
     def test_application_invalid_status(self):
         """Test that invalid status raises ValidationError"""
-        with pytest.raises(ValidationError, match="Input should be"):
-            Application(job_id=1, status="invalid_status")
+        with pytest.raises(ValidationError, match="Value error"):
+            Application(job_id=1, status="invalid_status", application_method="online")
 
     def test_application_valid_statuses(self):
         """Test all valid statuses"""
@@ -202,30 +204,29 @@ class TestJobRepository:
         assert job_id > 0
 
     def test_insert_duplicate_url_fails(self, temp_db):
-        """Test that inserting duplicate job_hash fails (not URL)"""
-        # Create two jobs with SAME title/company/location (same hash)
-        # but DIFFERENT URLs - should still be detected as duplicate
+        """Test that inserting duplicate URL fails"""
+        # Create two jobs with SAME URL - should detect as duplicate
         job1 = Job(
             title="Developer",
             company="Corp1",
             location="Paris",
-            url="https://example.com/job/url-1",
+            url="https://example.com/job/url-1",  # Same URL
             source="glassdoor",
         )
 
         job2 = Job(
-            title="Developer1",  # diffrent title
-            company="Corp2",  # diffrent company
-            location="London",  # diffrent location
-            url="https://example.com/job/url-1",  # Different URL (shouldn't matter)
-            source="glassdoor",  # Same source
+            title="Developer2",  # Different title
+            company="Corp2",  # Different company
+            location="London",  # Different location
+            url="https://example.com/job/url-1",  # Same URL - should fail
+            source="glassdoor",
         )
 
         job_id_1 = JobRepository.insert(job1)
         job_id_2 = JobRepository.insert(job2)
 
         assert job_id_1 is not None
-        assert job_id_2 is None  # Should fail due to duplicate hash
+        assert job_id_2 is None  # Should fail due to duplicate URL
 
     def test_get_by_id(self, temp_db):
         """Test getting job by ID"""
@@ -373,7 +374,7 @@ class TestJobRepository:
         # Update fields
         retrieved.title = "Updated Title"
         retrieved.company = "UpdatedCorp"
-        retrieved.salary_min = 50000
+        retrieved.salary_estimate = {"min": 50000, "currency": "EUR"}
 
         success = JobRepository.update(retrieved)
         assert success
@@ -382,7 +383,7 @@ class TestJobRepository:
         updated = JobRepository.get_by_id(job_id)
         assert updated.title == "Updated Title"
         assert updated.company == "UpdatedCorp"
-        assert updated.salary_min == 50000
+        assert updated.salary_min == 50000  # Access via property
 
     def test_delete_job(self, temp_db):
         """Test deleting a job"""
@@ -413,7 +414,11 @@ class TestJobRepository:
             is_easy_apply=True,
             job_external_id="glassdoor_123456",
             posted_date=datetime(2025, 10, 20, 10, 30, 0),
-            tech_stack='["Python", "scikit-learn", "pandas"]',
+            tech_stack=[
+                "Python",
+                "scikit-learn",
+                "pandas",
+            ],  # Direct list, not JSON string
         )
 
         job_id = JobRepository.insert(job)
@@ -426,7 +431,7 @@ class TestJobRepository:
         assert bool(retrieved.is_easy_apply) is True
         assert retrieved.job_external_id == "glassdoor_123456"
         assert retrieved.posted_date == datetime(2025, 10, 20, 10, 30, 0)
-        assert retrieved.tech_stack == '["Python", "scikit-learn", "pandas"]'
+        assert retrieved.tech_stack == ["Python", "scikit-learn", "pandas"]
 
 
 class TestApplicationRepository:

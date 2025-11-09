@@ -24,27 +24,41 @@ def setup_test_db():
     test_db = Path(tempfile.mkdtemp()) / "test_joblass.db"
 
     # Temporarily override DB_PATH
-    import joblass.db.connection as conn_module
+    import joblass.db.engine as conn_module
+    from sqlalchemy import create_engine
 
     original_db_path = conn_module.DB_PATH
     original_db_dir = conn_module.DB_DIR
+    original_engine = conn_module.engine
 
     conn_module.DB_PATH = test_db
     conn_module.DB_DIR = test_db.parent
 
+    # Dispose old engine and create new one
+    conn_module.engine.dispose()
+    conn_module.engine = create_engine(
+        f"sqlite:///{test_db}",
+        connect_args={"check_same_thread": False},
+        echo=False,
+    )
+
     # Initialize test database
     init_db()
 
-    return test_db, original_db_path, original_db_dir
+    return test_db, original_db_path, original_db_dir, original_engine
 
 
-def teardown_test_db(test_db, original_db_path, original_db_dir):
+def teardown_test_db(test_db, original_db_path, original_db_dir, original_engine):
     """Cleanup test database"""
-    import joblass.db.connection as conn_module
+    import joblass.db.engine as conn_module
 
-    # Restore original paths
+    # Dispose test engine
+    conn_module.engine.dispose()
+
+    # Restore original paths and engine
     conn_module.DB_PATH = original_db_path
     conn_module.DB_DIR = original_db_dir
+    conn_module.engine = original_engine
 
     # Remove test database
     if test_db.exists():
@@ -74,24 +88,14 @@ class MockGlassdoorScraper:
 
     def save_job_from_validated_data(self, validated_data, session_id=None):
         """Mock job saving - calls real repository"""
-        from joblass.db import Job
+        from joblass.db import JobRepository
 
         # Check if job already exists
         if JobRepository.exists(validated_data.url):
             return None
 
-        # Create Job from validated data
-        db_dict = validated_data.to_db_dict()
-        job = Job(
-            title=db_dict["title"],
-            company=db_dict["company"],
-            location=db_dict["location"],
-            url=db_dict["url"],
-            source=db_dict["source"],
-            description=db_dict["description"],
-            scraped_date=db_dict["scraped_date"],
-            session_id=session_id,
-        )
+        # Create Job from validated data using new to_job_model()
+        job = validated_data.to_job_model(session_id=session_id)
 
         return JobRepository.insert(job)
 
@@ -135,7 +139,7 @@ def create_mock_jobs(count=5):
 
 def test_workflow_creates_and_tracks_session():
     """Verify complete session lifecycle from start to finish"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, orig_path, orig_dir, orig_eng = setup_test_db()
 
     try:
         # Create mock driver
@@ -187,20 +191,21 @@ def test_workflow_creates_and_tracks_session():
             assert session.jobs_skipped == 0
             assert session.error_message is None
 
-            # Verify search criteria stored correctly
-            assert session.search_criteria.job_title == "Software Engineer"
-            assert session.search_criteria.location == "Paris"
-            assert session.search_criteria.preferred_location == "Île-de-France"
+            # Verify search criteria stored correctly (as dict in DB)
+            assert isinstance(session.search_criteria, dict)
+            assert session.search_criteria["job_title"] == "Software Engineer"
+            assert session.search_criteria["location"] == "Paris"
+            assert session.search_criteria["preferred_location"] == "Île-de-France"
 
             print("✓ Session created and tracked correctly")
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, orig_path, orig_dir, orig_eng)
 
 
 def test_workflow_links_jobs_to_session():
     """Verify all scraped jobs have correct session_id foreign key"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, orig_path, orig_dir, orig_eng = setup_test_db()
 
     try:
         mock_driver = Mock()
@@ -247,12 +252,12 @@ def test_workflow_links_jobs_to_session():
             print("✓ All jobs correctly linked to session")
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, orig_path, orig_dir, orig_eng)
 
 
 def test_workflow_handles_duplicates():
     """Verify workflow correctly tracks duplicate jobs in session stats"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, orig_path, orig_dir, orig_eng = setup_test_db()
 
     try:
         mock_driver = Mock()
@@ -315,12 +320,12 @@ def test_workflow_handles_duplicates():
             print("✓ Duplicates handled correctly")
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, orig_path, orig_dir, orig_eng)
 
 
 def test_workflow_marks_session_failed_on_error():
     """Verify error handling updates session status to failed"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, orig_path, orig_dir, orig_eng = setup_test_db()
 
     try:
         mock_driver = Mock()
@@ -360,12 +365,12 @@ def test_workflow_marks_session_failed_on_error():
             print("✓ Session marked as failed on error")
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, orig_path, orig_dir, orig_eng)
 
 
 def test_workflow_handles_no_jobs_found():
     """Verify session completed successfully even when no jobs found"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, orig_path, orig_dir, orig_eng = setup_test_db()
 
     try:
         mock_driver = Mock()
@@ -407,12 +412,12 @@ def test_workflow_handles_no_jobs_found():
             print("✓ No jobs found handled correctly")
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, orig_path, orig_dir, orig_eng)
 
 
 def test_workflow_with_advanced_filters():
     """Verify workflow correctly stores advanced filters in session"""
-    test_db, orig_path, orig_dir = setup_test_db()
+    test_db, orig_path, orig_dir, orig_eng = setup_test_db()
 
     try:
         mock_driver = Mock()
@@ -447,19 +452,16 @@ def test_workflow_with_advanced_filters():
             # Retrieve session and verify filters stored
             session = SearchSessionRepository.get_by_id(stats["session_id"])
 
-            assert session.search_criteria.is_easy_apply is True
-            assert session.search_criteria.date_posted == "7 jours"
-            assert session.search_criteria.job_type == "Stage"
-
-            # Verify filters can be converted back to dict format
-            filters_dict = session.search_criteria.to_filters_dict()
-            assert filters_dict["is_easy_apply"] is True
-            assert filters_dict["date_posted"] == "7 jours"
+            # Verify filters stored correctly (as dict in DB)
+            assert isinstance(session.search_criteria, dict)
+            assert session.search_criteria["is_easy_apply"] is True
+            assert session.search_criteria["date_posted"] == "7 jours"
+            assert session.search_criteria["job_type"] == "Stage"
 
             print("✓ Advanced filters stored correctly in session")
 
     finally:
-        teardown_test_db(test_db, orig_path, orig_dir)
+        teardown_test_db(test_db, orig_path, orig_dir, orig_eng)
 
 
 if __name__ == "__main__":

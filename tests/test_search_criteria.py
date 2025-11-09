@@ -179,9 +179,9 @@ def test_from_json_to_filters_dict_roundtrip():
         date_posted="3 jours",
     )
 
-    # Convert to JSON and back
-    json_str = original_criteria.to_json()
-    restored_criteria = SearchCriteria.from_json(json_str)
+    # Test Pydantic's built-in serialization works
+    json_str = original_criteria.model_dump_json(exclude_none=True)
+    restored_criteria = SearchCriteria.model_validate_json(json_str)
 
     # Both should produce same filters dict
     original_filters = original_criteria.to_filters_dict()

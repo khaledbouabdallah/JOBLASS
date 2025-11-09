@@ -53,11 +53,11 @@ class TestSalaryEstimate:
             SalaryEstimate(lower_bound=-10000, upper_bound=50000)
 
     def test_salary_to_json(self):
-        """Test JSON serialization"""
+        """Test JSON serialization using model_dump_json"""
         salary = SalaryEstimate(
             lower_bound=30000, upper_bound=50000, median=40000, currency="EUR"
         )
-        json_str = salary.to_json()
+        json_str = salary.model_dump_json(exclude_none=True)
         data = json.loads(json_str)
         assert data["lower_bound"] == 30000
         assert data["upper_bound"] == 50000
@@ -65,9 +65,9 @@ class TestSalaryEstimate:
         assert data["currency"] == "EUR"
 
     def test_salary_from_json(self):
-        """Test JSON deserialization"""
+        """Test JSON deserialization using model_validate_json"""
         json_str = '{"lower_bound": 30000, "upper_bound": 50000, "currency": "EUR"}'
-        salary = SalaryEstimate.from_json(json_str)
+        salary = SalaryEstimate.model_validate_json(json_str)
         assert salary is not None
         assert salary.lower_bound == 30000
         assert salary.upper_bound == 50000
@@ -75,9 +75,8 @@ class TestSalaryEstimate:
 
     def test_salary_from_invalid_json(self):
         """Test handling of invalid JSON"""
-        assert SalaryEstimate.from_json(None) is None
-        assert SalaryEstimate.from_json("") is None
-        assert SalaryEstimate.from_json("invalid") is None
+        with pytest.raises(ValidationError):
+            SalaryEstimate.model_validate_json("invalid")
 
 
 class TestCompanyOverview:
@@ -105,18 +104,18 @@ class TestCompanyOverview:
         assert overview.founded is None
 
     def test_company_overview_to_json(self):
-        """Test JSON serialization"""
+        """Test JSON serialization using model_dump_json"""
         overview = CompanyOverview(size="50-100", industry="Software")
-        json_str = overview.to_json()
+        json_str = overview.model_dump_json(exclude_none=True)
         data = json.loads(json_str)
         assert data["size"] == "50-100"
         assert data["industry"] == "Software"
         assert "founded" not in data  # None values excluded
 
     def test_company_overview_from_json(self):
-        """Test JSON deserialization"""
+        """Test JSON deserialization using model_validate_json"""
         json_str = '{"size": "50-100", "industry": "Software", "founded": "2015"}'
-        overview = CompanyOverview.from_json(json_str)
+        overview = CompanyOverview.model_validate_json(json_str)
         assert overview is not None
         assert overview.size == "50-100"
         assert overview.founded == "2015"
@@ -156,7 +155,7 @@ class TestReviewSummary:
             pros=[ReviewItem(text="Good", count=10)],
             cons=[ReviewItem(text="Bad", count=3)],
         )
-        json_str = summary.to_json()
+        json_str = summary.model_dump_json(exclude_none=True)
         data = json.loads(json_str)
         assert len(data["pros"]) == 1
         assert data["pros"][0]["text"] == "Good"
@@ -165,8 +164,7 @@ class TestReviewSummary:
     def test_review_summary_from_json(self):
         """Test JSON deserialization"""
         json_str = '{"pros": [{"text": "Good", "count": 10}], "cons": []}'
-        summary = ReviewSummary.from_json(json_str)
-        assert summary is not None
+        summary = ReviewSummary.model_validate_json(json_str)
         assert len(summary.pros) == 1
         assert summary.pros[0].text == "Good"
 
@@ -191,21 +189,6 @@ class TestSkillsList:
         skills = SkillsList(skills=["  Python  ", "SQL"])
         assert skills.skills[0] == "Python"
         assert skills.skills[1] == "SQL"
-
-    def test_skills_to_json(self):
-        """Test JSON serialization"""
-        skills = SkillsList(skills=["Python", "JavaScript"])
-        json_str = skills.to_json()
-        data = json.loads(json_str)
-        assert isinstance(data, list)
-        assert len(data) == 2
-
-    def test_skills_from_json(self):
-        """Test JSON deserialization"""
-        json_str = '["Python", "JavaScript", "SQL"]'
-        skills = SkillsList.from_json(json_str)
-        assert skills is not None
-        assert len(skills.skills) == 3
 
 
 class TestScrapedJobData:
@@ -428,16 +411,17 @@ class TestIntegration:
         assert db_dict["company_founded"] == "2015"
         assert db_dict["company_type"] == "Start-up"
 
-        # Verify JSON fields
+        # Verify JSON fields are strings (legacy format for to_db_dict)
         assert isinstance(db_dict["tech_stack"], str)
-        assert isinstance(db_dict["reviews_data"], str)
+        # reviews_data is now a dict (from model_dump), not JSON string
+        assert isinstance(db_dict["reviews_data"], dict)
 
-        # Verify JSON content
+        # Verify content
         tech_stack = json.loads(db_dict["tech_stack"])
         assert len(tech_stack) == 5
         assert "Python" in tech_stack
 
-        reviews = json.loads(db_dict["reviews_data"])
+        reviews = db_dict["reviews_data"]  # Already a dict
         assert len(reviews["pros"]) == 2
 
     def test_error_handling_missing_required_data(self):
