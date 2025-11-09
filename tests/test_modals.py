@@ -315,8 +315,7 @@ class TestScrapedJobData:
         assert db_dict["salary_min"] == 40000
         assert db_dict["salary_max"] == 60000
         assert db_dict["salary_currency"] == "EUR"
-        assert isinstance(db_dict["verified_skills"], str)  # JSON string
-        assert isinstance(db_dict["tech_stack"], str)  # JSON string
+        assert isinstance(db_dict["tech_stack"], str)  # JSON string - combined skills
 
     def test_from_glassdoor_extract(self):
         """Test creating from Glassdoor extraction data"""
@@ -430,7 +429,6 @@ class TestIntegration:
         assert db_dict["company_type"] == "Start-up"
 
         # Verify JSON fields
-        assert isinstance(db_dict["verified_skills"], str)
         assert isinstance(db_dict["tech_stack"], str)
         assert isinstance(db_dict["reviews_data"], str)
 

@@ -178,9 +178,9 @@ class Job(BaseModel):
 
     # Optional fields
     description: Optional[str] = None
-    tech_stack: Optional[str] = None  # JSON string of all tech/skills
-    verified_skills: Optional[str] = None  # JSON string of verified skills
-    required_skills: Optional[str] = None  # JSON string of required skills
+    tech_stack: Optional[str] = (
+        None  # JSON string of all skills (combined verified + required)
+    )
     salary_min: Optional[int] = Field(None, ge=0)
     salary_max: Optional[int] = Field(None, ge=0)
     salary_median: Optional[int] = Field(None, ge=0)
@@ -552,13 +552,7 @@ class ScrapedJobData(BaseModel):
             "posted_date": self.posted_date,
             "is_easy_apply": self.is_easy_apply,
             "job_external_id": self.job_external_id,
-            # JSON-serialized fields
-            "verified_skills": (
-                json.dumps(self.verified_skills) if self.verified_skills else None
-            ),
-            "required_skills": (
-                json.dumps(self.required_skills) if self.required_skills else None
-            ),
+            # JSON-serialized fields - combine verified + required into tech_stack
             "tech_stack": (
                 json.dumps(self.get_all_skills()) if self.get_all_skills() else None
             ),

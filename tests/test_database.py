@@ -71,9 +71,7 @@ class TestJobModel:
             url="https://example.com/job/2",
             source="glassdoor",
             description="Great ML role",
-            tech_stack='["Python", "TensorFlow"]',
-            verified_skills='["Python"]',
-            required_skills='["ML"]',
+            tech_stack='["Python", "TensorFlow", "ML"]',
             salary_min=40000,
             salary_max=60000,
             salary_median=50000,
@@ -84,7 +82,7 @@ class TestJobModel:
             posted_date=datetime(2025, 10, 20),
         )
         assert job.salary_min == 40000
-        assert job.verified_skills == '["Python"]'
+        assert job.tech_stack == '["Python", "TensorFlow", "ML"]'
         assert job.company_sector == "AI"
         assert job.is_easy_apply is True
         assert job.job_external_id == "ext456"
@@ -415,6 +413,7 @@ class TestJobRepository:
             is_easy_apply=True,
             job_external_id="glassdoor_123456",
             posted_date=datetime(2025, 10, 20, 10, 30, 0),
+            tech_stack='["Python", "scikit-learn", "pandas"]',
         )
 
         job_id = JobRepository.insert(job)
@@ -427,6 +426,7 @@ class TestJobRepository:
         assert bool(retrieved.is_easy_apply) is True
         assert retrieved.job_external_id == "glassdoor_123456"
         assert retrieved.posted_date == datetime(2025, 10, 20, 10, 30, 0)
+        assert retrieved.tech_stack == '["Python", "scikit-learn", "pandas"]'
 
 
 class TestApplicationRepository:

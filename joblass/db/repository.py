@@ -40,14 +40,14 @@ class JobRepository:
                     """
                     INSERT INTO jobs (
                         title, company, location, url, source,
-                        description, tech_stack, verified_skills, required_skills,
+                        description, tech_stack,
                         salary_min, salary_max, salary_median, salary_currency,
                         posted_date, scraped_date, job_age, job_type, remote_option,
                         is_easy_apply, job_external_id,
                         company_size, company_industry, company_sector,
                         company_founded, company_type, company_revenue,
                         reviews_data, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         job.title,
@@ -57,8 +57,6 @@ class JobRepository:
                         job.source,
                         job.description,
                         job.tech_stack,
-                        job.verified_skills,
-                        job.required_skills,
                         job.salary_min,
                         job.salary_max,
                         job.salary_median,
@@ -251,7 +249,7 @@ class JobRepository:
                     """
                     UPDATE jobs SET
                         title = ?, company = ?, location = ?, url = ?,
-                        description = ?, tech_stack = ?, verified_skills = ?, required_skills = ?,
+                        description = ?, tech_stack = ?,
                         salary_min = ?, salary_max = ?, salary_median = ?, salary_currency = ?,
                         posted_date = ?, job_age = ?, job_type = ?, remote_option = ?,
                         is_easy_apply = ?, job_external_id = ?,
@@ -268,8 +266,6 @@ class JobRepository:
                         job.url,
                         job.description,
                         job.tech_stack,
-                        job.verified_skills,
-                        job.required_skills,
                         job.salary_min,
                         job.salary_max,
                         job.salary_median,

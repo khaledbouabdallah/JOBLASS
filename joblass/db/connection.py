@@ -28,8 +28,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     source TEXT NOT NULL,
     description TEXT,
     tech_stack TEXT,
-    verified_skills TEXT,
-    required_skills TEXT,
     salary_min INTEGER,
     salary_max INTEGER,
     salary_median INTEGER,
@@ -251,8 +249,6 @@ def migrate_db() -> None:
 
         # Define new columns to add
         new_columns = {
-            "verified_skills": "TEXT",
-            "required_skills": "TEXT",
             "salary_median": "INTEGER",
             "company_sector": "TEXT",
             "company_founded": "TEXT",

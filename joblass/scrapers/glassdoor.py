@@ -378,8 +378,6 @@ class GlassdoorScraper:
                 source=db_dict["source"],
                 description=db_dict["description"],
                 tech_stack=db_dict["tech_stack"],
-                verified_skills=db_dict["verified_skills"],
-                required_skills=db_dict["required_skills"],
                 salary_min=db_dict["salary_min"],
                 salary_max=db_dict["salary_max"],
                 salary_median=db_dict["salary_median"],
