@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 
 from joblass.db.engine import get_session
-from joblass.db.models import Application, Job, Score, SearchSession
+from joblass.db.models import Application, Company, Job, Score, SearchSession
 from joblass.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -580,3 +580,174 @@ class SearchSessionRepository:
         except Exception as e:
             logger.error(f"Failed to delete session: {e}", exc_info=True)
             return False
+
+
+class CompanyRepository:
+    """Repository for company operations with SQLModel"""
+
+    @staticmethod
+    def upsert(company: Company) -> Optional[int]:  # noqa: C901
+        """
+        Insert or get existing company by name (case-insensitive).
+        Updates page_source to 'merged' if inserting profile data over job_posting data.
+
+        Args:
+            company: Company object to insert or update
+
+        Returns:
+            Company ID (existing or newly inserted)
+
+        Note:
+            - Unique by name (case-insensitive)
+            - If company exists with 'job_posting' source and new is 'company_profile',
+              merges data and updates page_source to 'merged'
+        """
+        try:
+            with get_session() as session:
+                # Check if company exists (case-insensitive)
+                statement = select(Company).where(col(Company.name).ilike(company.name))
+                existing = session.exec(statement).first()
+
+                if existing:
+                    # Company exists - decide whether to update or just return ID
+                    should_update = False
+
+                    # Merge logic: job_posting -> company_profile = merged
+                    if (
+                        existing.page_source == "job_posting"
+                        and company.page_source == "company_profile"
+                    ):
+                        # Merge company profile data into job posting data
+                        if company.overview:
+                            existing.overview = company.overview
+                        if company.evaluations:
+                            existing.evaluations = company.evaluations
+                        if company.profile_url and not existing.profile_url:
+                            existing.profile_url = company.profile_url
+
+                        existing.page_source = "merged"
+                        existing.updated_at = datetime.now()
+                        should_update = True
+
+                    elif (
+                        existing.page_source == "company_profile"
+                        and company.page_source == "job_posting"
+                    ):
+                        # Don't downgrade from profile to job_posting
+                        # But update job_posting fields if missing
+                        if company.reviews_summary and not existing.reviews_summary:
+                            existing.reviews_summary = company.reviews_summary
+                        if company.salary_estimates and not existing.salary_estimates:
+                            existing.salary_estimates = company.salary_estimates
+                        existing.updated_at = datetime.now()
+                        should_update = True
+
+                    if should_update:
+                        session.add(existing)
+                        session.commit()
+                        session.refresh(existing)
+                        logger.info(
+                            f"✓ Updated company: {existing.name} (ID: {existing.id}, source: {existing.page_source})"
+                        )
+
+                    logger.debug(
+                        f"Company already exists: {existing.name} (ID: {existing.id})"
+                    )
+                    return existing.id
+
+                # Insert new company
+                session.add(company)
+                session.commit()
+                session.refresh(company)
+                logger.info(
+                    f"✓ Inserted company: {company.name} (ID: {company.id}, source: {company.page_source})"
+                )
+                return company.id
+
+        except IntegrityError as e:
+            # Shouldn't happen with our check, but handle race conditions
+            logger.warning(f"Company already exists (race condition): {company.name}")
+            logger.debug(f"IntegrityError details: {e}")
+            # Retry: fetch existing company ID
+            try:
+                with get_session() as session:
+                    statement = select(Company).where(
+                        col(Company.name).ilike(company.name)
+                    )
+                    existing = session.exec(statement).first()
+                    return existing.id if existing else None
+            except Exception as retry_e:
+                logger.error(f"Failed to fetch company on retry: {retry_e}")
+                return None
+        except Exception as e:
+            logger.error(
+                f"Database error upserting company {company.name}: {e}", exc_info=True
+            )
+            raise
+
+    @staticmethod
+    def get_by_id(company_id: int) -> Optional[Company]:
+        """Get company by ID"""
+        try:
+            with get_session() as session:
+                return session.get(Company, company_id)
+        except Exception as e:
+            logger.error(f"Failed to fetch company {company_id}: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def get_by_name(name: str, case_sensitive: bool = False) -> Optional[Company]:
+        """
+        Get company by name
+
+        Args:
+            name: Company name
+            case_sensitive: Whether to match case-sensitively (default: False)
+
+        Returns:
+            Company object or None
+        """
+        try:
+            with get_session() as session:
+                if case_sensitive:
+                    statement = select(Company).where(Company.name == name)
+                else:
+                    statement = select(Company).where(col(Company.name).ilike(name))
+                return session.exec(statement).first()
+        except Exception as e:
+            logger.error(f"Failed to fetch company by name: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def get_all(
+        limit: Optional[int] = None,
+        offset: int = 0,
+        page_source: Optional[str] = None,
+    ) -> List[Company]:
+        """
+        Get all companies with optional filtering
+
+        Args:
+            limit: Maximum number of results
+            offset: Number of results to skip
+            page_source: Filter by page_source ('job_posting', 'company_profile', 'merged')
+
+        Returns:
+            List of Company objects
+        """
+        try:
+            with get_session() as session:
+                statement = select(Company).order_by(col(Company.name))
+
+                if page_source:
+                    statement = statement.where(Company.page_source == page_source)
+
+                if offset:
+                    statement = statement.offset(offset)
+                if limit:
+                    statement = statement.limit(limit)
+
+                return list(session.exec(statement).all())
+        except Exception as e:
+            logger.error(f"Failed to fetch companies: {e}", exc_info=True)
+            return []

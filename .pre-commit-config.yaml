@@ -14,7 +14,9 @@ repos:
     rev: v1.5.1
     hooks:
       - id: mypy
-        args: ["--ignore-missing-imports"]
+        args: ["--config-file=pyproject.toml"]
+        additional_dependencies: [types-PyYAML]
+        exclude: ^tests/
 
   - repo: local
     hooks:

@@ -44,6 +44,28 @@ class ReviewSummary(BaseModel):
     cons: List[ReviewItem] = Field(default_factory=list)
 
 
+class CompanyEvaluations(BaseModel):
+    """Company evaluations and ratings from Glassdoor"""
+
+    global_rating: Optional[float] = Field(
+        None, ge=0.0, le=5.0, description="Overall rating (0-5)"
+    )
+    reviews_count: Optional[int] = Field(
+        None, ge=0, description="Total number of reviews"
+    )
+    recommend_to_friend: Optional[float] = Field(
+        None, ge=0.0, le=100.0, description="% who recommend to friend"
+    )
+
+    # Detailed ratings (0-5 scale)
+    culture_and_values: Optional[float] = Field(None, ge=0.0, le=5.0)
+    diversity_equity_inclusion: Optional[float] = Field(None, ge=0.0, le=5.0)
+    work_life_balance: Optional[float] = Field(None, ge=0.0, le=5.0)
+    senior_management: Optional[float] = Field(None, ge=0.0, le=5.0)
+    compensation_and_benefits: Optional[float] = Field(None, ge=0.0, le=5.0)
+    career_opportunities: Optional[float] = Field(None, ge=0.0, le=5.0)
+
+
 class CompanyOverview(BaseModel):
     """Company overview information"""
 
@@ -53,6 +75,9 @@ class CompanyOverview(BaseModel):
     industry: Optional[str] = None
     sector: Optional[str] = None
     revenue: Optional[str] = None
+    headquarters: Optional[str] = None
+    website: Optional[str] = None
+    description: Optional[str] = None
 
 
 class SalaryEstimate(BaseModel):
@@ -85,6 +110,77 @@ class SkillsList(BaseModel):
         return [skill.strip() for skill in v if skill and skill.strip()]
 
 
+class SearchCriteria(BaseModel):
+    """Search criteria for job search (basic + advanced filters)"""
+
+    # --- Basic search fields (required) ---
+    job_title: str = Field(..., description="Job title/keyword")
+    location: str = Field(..., description="Job location")
+    preferred_location: Optional[str] = Field(
+        None, description="Specific location from suggestions"
+    )
+
+    # --- Toggles ---
+    is_easy_apply: bool = Field(False, description="Easy Apply only")
+    is_remote: bool = Field(False, description="Remote jobs only")
+
+    # --- Salary range ---
+    salary_min: Optional[int] = Field(None, ge=0, description="Minimum salary")
+    salary_max: Optional[int] = Field(None, ge=0, description="Maximum salary")
+
+    # --- Advanced filters (dynamic options) ---
+    company_rating: Optional[str] = Field(
+        None, description="Minimum company rating (e.g., '+3')"
+    )
+    date_posted: Optional[str] = Field(None, description="Date posted filter")
+    job_type: Optional[str] = Field(None, description="Job type (e.g., 'Stage')")
+    city: Optional[str] = Field(None, description="City filter")
+    industry: Optional[str] = Field(None, description="Industry")
+    professional_domain: Optional[str] = Field(None, description="Professional domain")
+    experience_level: Optional[str] = Field(None, description="Experience level")
+    company: Optional[str] = Field(None, description="Specific company")
+    company_size: Optional[str] = Field(None, description="Company size")
+
+    def to_filters_dict(self) -> dict:
+        """
+        Convert to filters dict for ExtraFilters.apply_filters()
+
+        Returns:
+            dict: Only advanced filters with non-None values (excludes basic search fields)
+        """
+        filters: dict[str, bool | tuple[int, int] | str] = {}
+
+        # Toggles (only include if True)
+        if self.is_easy_apply:
+            filters["is_easy_apply"] = True
+        if self.is_remote:
+            filters["is_remote"] = True
+
+        # Salary range - only include if BOTH min and max are provided
+        if self.salary_min is not None and self.salary_max is not None:
+            filters["salary_range"] = (self.salary_min, self.salary_max)
+
+        # Advanced filters (only include non-None values)
+        advanced_fields = [
+            "company_rating",
+            "date_posted",
+            "job_type",
+            "city",
+            "industry",
+            "professional_domain",
+            "experience_level",
+            "company",
+            "company_size",
+        ]
+
+        for field in advanced_fields:
+            value = getattr(self, field)
+            if value is not None:
+                filters[field] = value
+
+        return filters
+
+
 # ============================================================================
 # Core Database Models
 # ============================================================================
@@ -100,7 +196,9 @@ class Job(SQLModel, table=True):  # type: ignore[call-arg]
 
     # Required fields with indexes
     title: str = SQLField(index=True, min_length=1)
-    company: str = SQLField(index=True, min_length=1)
+    company: str = SQLField(
+        index=True, min_length=1
+    )  # Kept for display/search (denormalized)
     location: str = SQLField(min_length=1)
     url: str = SQLField(unique=True, index=True)
     source: str = SQLField(index=True)
@@ -122,14 +220,11 @@ class Job(SQLModel, table=True):  # type: ignore[call-arg]
     salary_estimate: Optional[Dict[str, Any]] = SQLField(
         default=None, sa_column=Column(JSON)
     )
-    company_overview: Optional[Dict[str, str]] = SQLField(
-        default=None, sa_column=Column(JSON)
-    )
-    reviews_data: Optional[Dict[str, List[Dict[str, Any]]]] = SQLField(
-        default=None, sa_column=Column(JSON)
-    )
 
-    # Foreign key to search_sessions
+    # Foreign keys
+    company_id: Optional[int] = SQLField(
+        default=None, foreign_key="companies.id", index=True
+    )
     session_id: Optional[int] = SQLField(
         default=None, foreign_key="search_sessions.id", index=True
     )
@@ -139,6 +234,7 @@ class Job(SQLModel, table=True):  # type: ignore[call-arg]
     updated_at: datetime = SQLField(default_factory=datetime.now)
 
     # Relationships
+    company_rel: Optional["Company"] = Relationship(back_populates="jobs")
     session: Optional["SearchSession"] = Relationship(back_populates="jobs")
     scores: Optional["Score"] = Relationship(
         back_populates="job", sa_relationship_kwargs={"cascade": "all, delete"}
@@ -190,74 +286,6 @@ class Job(SQLModel, table=True):  # type: ignore[call-arg]
         if self.salary_estimate:
             return self.salary_estimate.get("currency", "EUR")
         return "EUR"
-
-    @property
-    def company_size(self) -> Optional[str]:
-        if self.company_overview:
-            return self.company_overview.get("size")
-        return None
-
-    @property
-    def company_industry(self) -> Optional[str]:
-        if self.company_overview:
-            return self.company_overview.get("industry")
-        return None
-
-    @property
-    def company_sector(self) -> Optional[str]:
-        if self.company_overview:
-            return self.company_overview.get("sector")
-        return None
-
-    @property
-    def company_founded(self) -> Optional[str]:
-        if self.company_overview:
-            return self.company_overview.get("founded")
-        return None
-
-    @property
-    def company_type(self) -> Optional[str]:
-        if self.company_overview:
-            return self.company_overview.get("type")
-        return None
-
-    @property
-    def company_revenue(self) -> Optional[str]:
-        if self.company_overview:
-            return self.company_overview.get("revenue")
-        return None
-
-
-class SearchCriteria(BaseModel):
-    """Search criteria for job search (basic + advanced filters)"""
-
-    # --- Basic search fields (required) ---
-    job_title: str = Field(..., description="Job title/keyword")
-    location: str = Field(..., description="Job location")
-    preferred_location: Optional[str] = Field(
-        None, description="Specific location from suggestions"
-    )
-
-    # --- Toggles ---
-    is_easy_apply: bool = Field(False, description="Easy Apply only")
-    is_remote: bool = Field(False, description="Remote jobs only")
-
-    # --- Salary range ---
-    salary_min: Optional[int] = Field(None, ge=0, description="Minimum salary")
-    salary_max: Optional[int] = Field(None, ge=0, description="Maximum salary")
-
-    # --- Advanced filters (dynamic options) ---
-    company_rating: Optional[str] = Field(
-        None, description="Minimum company rating (e.g., '+3')"
-    )
-    date_posted: Optional[str] = Field(None, description="Date posted filter")
-    job_type: Optional[str] = Field(None, description="Job type (e.g., 'Stage')")
-    city: Optional[str] = Field(None, description="City filter")
-    industry: Optional[str] = Field(None, description="Industry")
-    professional_domain: Optional[str] = Field(None, description="Professional domain")
-    experience_level: Optional[str] = Field(None, description="Experience level")
-    company: Optional[str] = Field(None, description="Specific company")
-    company_size: Optional[str] = Field(None, description="Company size")
 
     def to_filters_dict(self) -> dict:
         """
@@ -494,8 +522,55 @@ class Score(SQLModel, table=True):  # type: ignore[call-arg]
         return self.total_score
 
 
+class Company(SQLModel, table=True):  # type: ignore[call-arg]
+    """Company profile with basic info and JSON columns"""
+
+    __tablename__ = "companies"
+
+    # Primary key
+    id: Optional[int] = SQLField(default=None, primary_key=True)
+
+    # Company name (unique)
+    name: str = SQLField(unique=True, index=True, min_length=1)
+
+    # Source and page source tracking
+    source: str = SQLField(index=True, default="glassdoor")
+    page_source: str = SQLField(
+        index=True,
+        description="Where data was scraped from: 'job_posting', 'company_profile', or 'merged'",
+    )
+
+    # Profile URL
+    profile_url: Optional[str] = SQLField(default=None, unique=True, index=True)
+
+    # JSON columns for structured data
+    overview: Optional[Dict[str, str]] = SQLField(default=None, sa_column=Column(JSON))
+    reviews_summary: Optional[Dict[str, List[Dict[str, Any]]]] = SQLField(
+        default=None, sa_column=Column(JSON), description="Pros/cons from reviews"
+    )
+    evaluations: Optional[Dict[str, Any]] = SQLField(
+        default=None, sa_column=Column(JSON), description="Numeric ratings and metrics"
+    )
+    salary_estimates: Optional[List[Dict[str, Any]]] = SQLField(
+        default=None, sa_column=Column(JSON)
+    )
+
+    # Timestamps
+    created_at: datetime = SQLField(default_factory=datetime.now)
+    updated_at: datetime = SQLField(default_factory=datetime.now)
+
+    # Relationships
+    jobs: List["Job"] = Relationship(back_populates="company_rel")
+
+    @field_validator("name")
+    @classmethod
+    def strip_whitespace(cls, v: str) -> str:
+        """Strip leading/trailing whitespace"""
+        return v.strip()
+
+
 # ============================================================================
-# ScrapedJobData - Validation model for raw scraping data
+# Validation model for raw scraping data
 # ============================================================================
 
 
@@ -530,8 +605,6 @@ class ScrapedJobData(BaseModel):
     verified_skills: List[str] = Field(default_factory=list)
     required_skills: List[str] = Field(default_factory=list)
     salary_estimate: Optional[SalaryEstimate] = None
-    company_overview: Optional[CompanyOverview] = None
-    reviews_summary: Optional[ReviewSummary] = None
 
     # Metadata
     source: str = "glassdoor"
@@ -566,12 +639,15 @@ class ScrapedJobData(BaseModel):
         """Get combined unique skills from verified and required"""
         return list(dict.fromkeys(self.verified_skills + self.required_skills))
 
-    def to_job_model(self, session_id: Optional[int] = None) -> Job:
+    def to_job_model(
+        self, session_id: Optional[int] = None, company_id: Optional[int] = None
+    ) -> Job:
         """
         Convert to Job model for database insertion
 
         Args:
             session_id: Optional search session ID to associate with
+            company_id: Optional company ID to link to
 
         Returns:
             Job model instance ready for database insertion
@@ -595,14 +671,7 @@ class ScrapedJobData(BaseModel):
                 if self.salary_estimate
                 else None
             ),
-            company_overview=(
-                self.company_overview.model_dump(exclude_none=True)
-                if self.company_overview
-                else None
-            ),
-            reviews_data=(
-                self.reviews_summary.model_dump() if self.reviews_summary else None
-            ),
+            company_id=company_id,
             session_id=session_id,
         )
 
@@ -624,6 +693,7 @@ class ScrapedJobData(BaseModel):
             "source": self.source,
             "scraped_date": self.scraped_date,
             "posted_date": self.posted_date,
+            "job_age": self.job_age,
             "is_easy_apply": self.is_easy_apply,
             "job_external_id": self.job_external_id,
             # JSON-serialized fields - combine verified + required into tech_stack
@@ -642,27 +712,6 @@ class ScrapedJobData(BaseModel):
             "salary_currency": (
                 self.salary_estimate.currency if self.salary_estimate else "EUR"
             ),
-            "company_size": (
-                self.company_overview.size if self.company_overview else None
-            ),
-            "company_industry": (
-                self.company_overview.industry if self.company_overview else None
-            ),
-            "company_sector": (
-                self.company_overview.sector if self.company_overview else None
-            ),
-            "company_founded": (
-                self.company_overview.founded if self.company_overview else None
-            ),
-            "company_type": (
-                self.company_overview.type if self.company_overview else None
-            ),
-            "company_revenue": (
-                self.company_overview.revenue if self.company_overview else None
-            ),
-            "reviews_data": (
-                self.reviews_summary.model_dump() if self.reviews_summary else None
-            ),
         }
 
     @classmethod
@@ -671,7 +720,7 @@ class ScrapedJobData(BaseModel):
         Create from glassdoor extract_job_details() output
 
         Args:
-            data: Dictionary from extract_job_details()
+            data: Dictionary from extract_job_details() - job data only
 
         Returns:
             Validated ScrapedJobData instance
@@ -685,20 +734,6 @@ class ScrapedJobData(BaseModel):
                 upper_bound=salary_data.get("upper_bound"),
                 median=salary_data.get("median"),
                 currency=salary_data.get("currency"),
-            )
-
-        # Handle company overview
-        company_overview = None
-        if data.get("company_overview"):
-            company_overview = CompanyOverview(**data["company_overview"])
-
-        # Handle reviews summary
-        reviews_summary = None
-        if data.get("reviews_summary"):
-            reviews_data = data["reviews_summary"]
-            reviews_summary = ReviewSummary(
-                pros=[ReviewItem(**p) for p in reviews_data.get("pros", [])],
-                cons=[ReviewItem(**c) for c in reviews_data.get("cons", [])],
             )
 
         # URL is the Glassdoor job page URL
@@ -715,6 +750,203 @@ class ScrapedJobData(BaseModel):
             verified_skills=data.get("verified_skills", []),
             required_skills=data.get("required_skills", []),
             salary_estimate=salary_estimate,
-            company_overview=company_overview,
-            reviews_summary=reviews_summary,
+        )
+
+
+class ScrapedCompanyFromJobPosting(BaseModel):
+    """
+    Company data scraped from job posting pages (partial data)
+
+    This is extracted alongside job details from job posting pages.
+    Provides basic company overview and reviews summary.
+    """
+
+    # Required fields
+    company_name: str = Field(min_length=1, description="Company name")
+    profile_url: Optional[str] = Field(
+        None, description="Glassdoor company profile URL"
+    )
+
+    # Metadata
+    source: str = Field(default="glassdoor")
+    scraped_date: datetime = Field(default_factory=datetime.now)
+
+    # Partial company data from job posting
+    overview: Optional[CompanyOverview] = Field(
+        None,
+        description="Company overview (size, founded, type, industry, sector, revenue)",
+    )
+    reviews_summary: Optional[ReviewSummary] = Field(
+        None, description="Review pros/cons summary from job posting"
+    )
+    salary_estimates: List[SalaryEstimate] = Field(
+        default_factory=list, description="Salary estimates shown on job posting"
+    )
+
+    @field_validator("company_name")
+    @classmethod
+    def strip_whitespace(cls, v: str) -> str:
+        """Strip leading/trailing whitespace"""
+        return v.strip()
+
+    @field_validator("profile_url")
+    @classmethod
+    def validate_url(cls, v: Optional[str]) -> Optional[str]:
+        """Basic URL validation"""
+        if v is None:
+            return None
+        v = v.strip()
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        return v
+
+    def to_company_model(self) -> Company:
+        """
+        Convert to Company model for database insertion
+
+        Returns:
+            Company model instance with page_source='job_posting'
+        """
+        return Company(
+            name=self.company_name,
+            source=self.source,
+            page_source="job_posting",
+            profile_url=self.profile_url,
+            overview=(
+                self.overview.model_dump(exclude_none=True) if self.overview else None
+            ),
+            reviews_summary=(
+                self.reviews_summary.model_dump() if self.reviews_summary else None
+            ),
+            salary_estimates=(
+                [s.model_dump(exclude_none=True) for s in self.salary_estimates]
+                if self.salary_estimates
+                else None
+            ),
+            evaluations=None,  # Not available from job posting
+        )
+
+
+class ScrapedCompanyFromProfile(BaseModel):
+    """
+    Company data scraped from dedicated company profile pages (full data)
+
+    This is extracted from the company's Glassdoor profile page.
+    Provides complete company information including evaluations.
+    """
+
+    # Required fields
+    company_name: str = Field(min_length=1, description="Company name")
+    profile_url: str = Field(min_length=1, description="Glassdoor company profile URL")
+
+    # Metadata
+    source: str = Field(default="glassdoor")
+    scraped_date: datetime = Field(default_factory=datetime.now)
+
+    # Full company overview from profile
+    overview: Optional[CompanyOverview] = Field(
+        None,
+        description="Complete company overview (size, founded, type, industry, sector, revenue, headquarters, website, description)",
+    )
+
+    # Evaluations from profile (numeric ratings)
+    evaluations: Optional[CompanyEvaluations] = Field(
+        None, description="Company evaluations and ratings from reviews"
+    )
+
+    # Note: salary_estimates and reviews_summary should be scraped separately
+    # from dedicated tabs if needed (not part of overview extraction)
+
+    @field_validator("company_name")
+    @classmethod
+    def strip_whitespace(cls, v: str) -> str:
+        """Strip leading/trailing whitespace"""
+        return v.strip()
+
+    @field_validator("profile_url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        """Basic URL validation"""
+        v = v.strip()
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        return v
+
+    def to_company_model(self) -> Company:
+        """
+        Convert to Company model for database insertion
+
+        Returns:
+            Company model instance with page_source='company_profile'
+        """
+        return Company(
+            name=self.company_name,
+            source=self.source,
+            page_source="company_profile",
+            profile_url=self.profile_url,
+            overview=(
+                self.overview.model_dump(exclude_none=True) if self.overview else None
+            ),
+            evaluations=(
+                self.evaluations.model_dump(exclude_none=True)
+                if self.evaluations
+                else None
+            ),
+            reviews_summary=None,  # Should be fetched separately from reviews tab
+            salary_estimates=None,  # Should be fetched separately from salaries tab
+        )
+
+    @classmethod
+    def from_glassdoor_extract(
+        cls,
+        company_info: Dict[str, Any],
+        company_evaluations: Optional[Dict[str, Any]] = None,
+    ) -> "ScrapedCompanyFromProfile":
+        """
+        Create from glassdoor extract_company_info() and extract_company_evaluations() output
+
+        Args:
+            company_info: Dictionary from extract_company_info()
+            company_evaluations: Optional dictionary from extract_company_evaluations()
+
+        Returns:
+            Validated ScrapedCompanyFromProfile instance
+        """
+        # Build CompanyOverview from company_info
+        overview = CompanyOverview(
+            size=company_info.get("size"),
+            founded=company_info.get("founded"),
+            type=company_info.get("type"),
+            industry=company_info.get("industry"),
+            sector=None,  # Not in extract output
+            revenue=company_info.get("revenue"),
+            headquarters=company_info.get("headquarters"),
+            website=company_info.get("website"),
+            description=company_info.get("description"),
+        )
+
+        # Build CompanyEvaluations from company_evaluations
+        evaluations = None
+        if company_evaluations:
+            evaluations = CompanyEvaluations(
+                global_rating=company_evaluations.get("global"),
+                reviews_count=company_evaluations.get("reviews_count"),
+                recommend_to_friend=company_evaluations.get("recommend_to_friend"),
+                culture_and_values=company_evaluations.get("culture_and_values"),
+                diversity_equity_inclusion=company_evaluations.get(
+                    "diversity_equity_inclusion"
+                ),
+                work_life_balance=company_evaluations.get("work_life_balance"),
+                senior_management=company_evaluations.get("senior_management"),
+                compensation_and_benefits=company_evaluations.get(
+                    "compensation_and_benefits"
+                ),
+                career_opportunities=company_evaluations.get("career_opportunities"),
+            )
+
+        return cls(
+            company_name=company_info.get("company_name", ""),
+            profile_url=company_info.get("url", ""),
+            overview=overview,
+            evaluations=evaluations,
         )

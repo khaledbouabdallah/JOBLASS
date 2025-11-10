@@ -1,188 +1,181 @@
 """
-Tests for database models and repository
+Integration tests for database repositories (CRUD operations)
 
-Run with: pytest tests/test_database.py -v
+Tests CRUD operations with a real SQLite database.
+Uses temp_db fixture from conftest.py for automatic cleanup.
+
+Run with: pytest tests/integration/test_repositories.py -v
 """
 
-import tempfile
 from datetime import datetime
-from pathlib import Path
 
-import pytest
 from pydantic import ValidationError
 
 from joblass.db import (
     Application,
-    Job,
-    Score,
     ApplicationRepository,
+    Company,
+    CompanyRepository,
+    Job,
     JobRepository,
+    Score,
     ScoreRepository,
 )
-from joblass.db.engine import init_db
 
 
-@pytest.fixture
-def temp_db():
-    """Create a temporary database for testing"""
-    # Create temp directory
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test.db"
+class TestCompanyRepository:
+    """Test CompanyRepository operations"""
 
-        # Monkey patch the DB_PATH
-        import joblass.db.engine as engine_module
-
-        original_path = engine_module.DB_PATH
-        engine_module.DB_PATH = db_path
-
-        # Recreate engine with new path
-        from sqlalchemy import create_engine
-        from sqlmodel import SQLModel
-
-        original_engine = engine_module.engine
-        engine_module.engine = create_engine(
-            f"sqlite:///{db_path}",
-            connect_args={"check_same_thread": False},
-            echo=False,
+    def test_insert_company(self, temp_db):
+        """Test inserting a company via upsert"""
+        company = Company(
+            name="DataCorp",
+            page_source="job_posting",
+            source="glassdoor",
+            overview={"size": "100-500", "industry": "Data Science"},
         )
 
-        # Initialize database
-        SQLModel.metadata.create_all(engine_module.engine)
+        company_id = CompanyRepository.upsert(company)
+        assert company_id is not None
+        assert company_id > 0
 
-        yield db_path
-
-        # Cleanup and restore
-        engine_module.engine.dispose()
-        engine_module.DB_PATH = original_path
-        engine_module.engine = original_engine
-
-
-class TestJobModel:
-    """Test Job dataclass"""
-
-    def test_job_creation_minimal(self):
-        """Test creating job with minimal required fields"""
-        job = Job(
-            title="Software Engineer",
-            company="TechCorp",
-            location="Paris",
-            url="https://example.com/job/1",
+    def test_get_by_id(self, temp_db):
+        """Test getting company by ID"""
+        company = Company(
+            name="MLStartup",
+            page_source="company_profile",
             source="glassdoor",
         )
-        assert job.title == "Software Engineer"
-        assert job.company == "TechCorp"
-        assert job.id is None
-        assert job.salary_currency == "EUR"  # Default value
 
-    def test_job_creation_full(self):
-        """Test creating job with all fields"""
-        job = Job(
-            title="ML Engineer",
-            company="AI Corp",
-            location="Lyon",
-            url="https://example.com/job/2",
-            source="glassdoor",
-            description="Great ML role",
-            tech_stack=["Python", "TensorFlow", "ML"],  # Now a list, not JSON string
-            salary_estimate={
-                "min": 40000,
-                "max": 60000,
-                "median": 50000,
-                "currency": "EUR",
-            },  # JSON dict
-            company_overview={"size": "50-100", "sector": "AI"},  # JSON dict
-            is_easy_apply=True,
-            job_external_id="ext456",
-            posted_date=datetime(2025, 10, 20),
+        company_id = CompanyRepository.upsert(company)
+        retrieved = CompanyRepository.get_by_id(company_id)
+
+        assert retrieved is not None
+        assert retrieved.id == company_id
+        assert retrieved.name == "MLStartup"
+
+    def test_get_by_name(self, temp_db):
+        """Test getting company by name (case-insensitive)"""
+        company = Company(
+            name="TechGiant Inc",
+            page_source="job_posting",
         )
-        # Access via properties (backward compatibility)
-        assert job.salary_min == 40000
-        assert job.tech_stack == ["Python", "TensorFlow", "ML"]
-        assert job.company_sector == "AI"
-        assert job.is_easy_apply is True
-        assert job.job_external_id == "ext456"
-        assert job.posted_date == datetime(2025, 10, 20)
 
+        CompanyRepository.upsert(company)
 
-class TestApplicationModel:
-    """Test Application dataclass"""
+        # Case-insensitive search
+        result1 = CompanyRepository.get_by_name("TechGiant Inc")
+        result2 = CompanyRepository.get_by_name("techgiant inc")
+        result3 = CompanyRepository.get_by_name("TECHGIANT INC")
 
-    def test_application_creation(self):
-        """Test creating application"""
-        app = Application(
-            job_id=1, status="applied", application_method="online_portal"
+        assert result1 is not None
+        assert result2 is not None
+        assert result3 is not None
+        assert result1.name == result2.name == result3.name == "TechGiant Inc"
+
+    def test_upsert_creates_new_company(self, temp_db):
+        """Test upsert creates company when it doesn't exist"""
+        company = Company(
+            name="NewCompany",
+            page_source="job_posting",
+            overview={"size": "1-50", "industry": "Startup"},
         )
-        assert app.job_id == 1
-        assert app.status == "applied"
-        assert app.application_method == "online_portal"
-        assert app.id is None
 
-    def test_application_invalid_status(self):
-        """Test that invalid status raises ValidationError"""
-        with pytest.raises(ValidationError, match="Value error"):
-            Application(job_id=1, status="invalid_status", application_method="online")
+        company_id = CompanyRepository.upsert(company)
 
-    def test_application_valid_statuses(self):
-        """Test all valid statuses"""
-        valid_statuses = [
-            "pending",
-            "applied",
-            "rejected",
-            "interview",
-            "offer",
-            "declined",
-            "accepted",
-        ]
-        for status in valid_statuses:
-            app = Application(
-                job_id=1, status=status, application_method="online_portal"
-            )
-            assert app.status == status
+        assert company_id is not None
+        retrieved = CompanyRepository.get_by_id(company_id)
+        assert retrieved.name == "NewCompany"
+        assert retrieved.page_source == "job_posting"
 
-
-class TestScoreModel:
-    """Test Score dataclass"""
-
-    def test_score_creation(self):
-        """Test creating score"""
-        score = Score(job_id=1)
-        assert score.job_id == 1
-        assert score.total_score == 0.0
-
-    def test_score_calculate_total_default_weights(self):
-        """Test score calculation with default weights"""
-        score = Score(
-            job_id=1,
-            tech_match=80.0,
-            learning_opportunity=70.0,
-            company_quality=60.0,
-            practical_factors=90.0,
+    def test_upsert_merges_job_posting_then_company_profile(self, temp_db):
+        """Test upsert merges job_posting data with company_profile data"""
+        # First insert from job posting (partial data)
+        job_posting_company = Company(
+            name="Acme Corp",
+            page_source="job_posting",
+            overview={"size": "500-1000"},
         )
-        # Should auto-calculate in __post_init__
-        assert score.total_score > 0
 
-        # Recalculate to verify
-        total = score.calculate_total()
-        expected = (80 * 0.30) + (70 * 0.25) + (60 * 0.20) + (90 * 0.25)
-        assert total == pytest.approx(expected, rel=0.01)
+        company_id_1 = CompanyRepository.upsert(job_posting_company)
 
-    def test_score_calculate_total_custom_weights(self):
-        """Test score calculation with custom weights"""
-        score = Score(
-            job_id=1,
-            tech_match=100.0,
-            learning_opportunity=80.0,
-            company_quality=60.0,
-            practical_factors=40.0,
+        # Then scrape full company profile
+        company_profile_company = Company(
+            name="Acme Corp",  # Same name
+            page_source="company_profile",
+            profile_url="https://glassdoor.com/acme",
+            overview={"size": "500-1000", "industry": "Technology", "founded": "2005"},
+            evaluations={"global_rating": 4.5, "reviews_count": 200},
         )
-        total = score.calculate_total(
-            tech_weight=0.5,
-            learning_weight=0.3,
-            company_weight=0.1,
-            practical_weight=0.1,
+
+        company_id_2 = CompanyRepository.upsert(company_profile_company)
+
+        # Should be same company
+        assert company_id_1 == company_id_2
+
+        # Retrieve and verify merged data
+        merged = CompanyRepository.get_by_id(company_id_1)
+
+        assert merged.page_source == "merged"
+        assert merged.overview["size"] == "500-1000"
+        assert merged.overview["industry"] == "Technology"
+        assert merged.evaluations["global_rating"] == 4.5
+        assert merged.profile_url == "https://glassdoor.com/acme"
+
+    def test_upsert_respects_company_profile_priority(self, temp_db):
+        """Test that company_profile data takes priority in merges"""
+        # First: Company profile with full data
+        profile_company = Company(
+            name="GlobalTech",
+            page_source="company_profile",
+            overview={"size": "10000+", "industry": "Software"},
+            evaluations={"global_rating": 4.0},
         )
-        expected = (100 * 0.5) + (80 * 0.3) + (60 * 0.1) + (40 * 0.1)
-        assert total == pytest.approx(expected, rel=0.01)
+
+        company_id_1 = CompanyRepository.upsert(profile_company)
+
+        # Second: Job posting with less data
+        job_posting_company = Company(
+            name="GlobalTech",
+            page_source="job_posting",
+            overview={"size": "5000-10000"},  # Different size
+        )
+
+        company_id_2 = CompanyRepository.upsert(job_posting_company)
+
+        assert company_id_1 == company_id_2
+
+        # Retrieve and verify profile data wasn't overwritten
+        merged = CompanyRepository.get_by_id(company_id_1)
+
+        # Page source should stay "company_profile" (not downgraded)
+        # This tests the merge logic priority
+        assert merged.page_source == "company_profile"
+        assert merged.overview["size"] == "10000+"  # Original profile data preserved
+        assert merged.evaluations["global_rating"] == 4.0
+
+    def test_upsert_handles_duplicate_names_case_insensitive(self, temp_db):
+        """Test upsert with case-insensitive name matching"""
+        company1 = Company(
+            name="StartupXYZ",
+            page_source="job_posting",
+        )
+
+        company2 = Company(
+            name="startupxyz",  # Different case
+            page_source="company_profile",
+            profile_url="https://glassdoor.com/startupxyz",
+        )
+
+        id1 = CompanyRepository.upsert(company1)
+        id2 = CompanyRepository.upsert(company2)
+
+        # Should match and merge
+        assert id1 == id2
+
+        # Verify only one company exists
+        retrieved = CompanyRepository.get_by_id(id1)
+        assert retrieved.profile_url == "https://glassdoor.com/startupxyz"
 
 
 class TestJobRepository:
