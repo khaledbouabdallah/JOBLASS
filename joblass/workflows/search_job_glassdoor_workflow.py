@@ -6,6 +6,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 
 from joblass.db import (
+    CompanyRepository,
+    JobRepository,
+    ScrapedCompanyFromJobPosting,
     ScrapedJobData,
     SearchCriteria,
     SearchSession,
@@ -138,9 +141,9 @@ class JobSearchWorkflow:
         jobs_found: int,
         max_jobs: Optional[int] = None,
         skip_until: Optional[int] = None,
-    ) -> List[ScrapedJobData]:
+    ) -> tuple[List[ScrapedJobData], List[ScrapedCompanyFromJobPosting]]:
         """
-        Scrape job listings from search results.
+        Scrape job listings and company data from search results.
 
         Args:
             jobs_found: Total number of jobs found in search
@@ -148,39 +151,92 @@ class JobSearchWorkflow:
             skip_until: Skip to specific job index (for resume)
 
         Returns:
-            list: List of validated ScrapedJobData instances
+            tuple: (list of ScrapedJobData, list of ScrapedCompanyFromJobPosting)
         """
         if not jobs_found:
             logger.warning("No jobs to scrape")
-            return []
+            return [], []
 
         logger.info(f"Starting scrape of up to {max_jobs or jobs_found} jobs")
-        scraped_jobs = self.scraper.search_jobs(
+        scraped_jobs, scraped_companies = self.scraper.search_jobs(
             jobs_found=jobs_found, max_jobs=max_jobs, skip_until=skip_until
         )
 
-        # search_jobs returns empty list on no results or interruption
+        # search_jobs returns empty lists on no results or interruption
         if not scraped_jobs:
             logger.warning("No jobs scraped")
-            return []
+            return [], []
 
-        return scraped_jobs
+        logger.info(
+            f"Scraped {len(scraped_jobs)} jobs with {len(scraped_companies)} company records"
+        )
+        return scraped_jobs, scraped_companies
 
-    def save_jobs_to_db(
-        self, scraped_jobs: List[ScrapedJobData], session_id: Optional[int] = None
+    def save_companies_to_db(
+        self, scraped_companies: List[ScrapedCompanyFromJobPosting]
     ) -> dict[str, int]:
         """
-        Save scraped jobs to database with URL-based deduplication.
+        Save/upsert scraped companies to database.
+        Returns a mapping of company names to their IDs for linking jobs.
+
+        Args:
+            scraped_companies: List of validated ScrapedCompanyFromJobPosting instances
+
+        Returns:
+            dict: Company name -> company ID mapping
+        """
+        company_map: dict[str, int] = {}
+
+        if not scraped_companies:
+            return company_map
+
+        logger.info(f"Saving {len(scraped_companies)} companies to database...")
+
+        for company_data in scraped_companies:
+            control.wait_if_paused()
+            control.check_should_stop()
+
+            try:
+                # Convert to Company model and upsert
+                company_model = company_data.to_company_model()
+                company_id = CompanyRepository.upsert(company_model)
+
+                if company_id:
+                    company_map[company_data.company_name] = company_id
+                else:
+                    logger.warning(
+                        f"Failed to upsert company: {company_data.company_name}"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Error saving company {company_data.company_name}: {e}",
+                    exc_info=True,
+                )
+
+        logger.info(
+            f"Company save complete: {len(company_map)}/{len(scraped_companies)} companies saved/updated"
+        )
+        return company_map
+
+    def save_jobs_to_db(
+        self,
+        scraped_jobs: List[ScrapedJobData],
+        company_map: dict[str, int],
+        session_id: Optional[int] = None,
+    ) -> dict[str, int]:
+        """
+        Save scraped jobs to database with URL-based deduplication and company linking.
 
         Args:
             scraped_jobs: List of validated ScrapedJobData instances
+            company_map: Mapping of company names to company IDs (from save_companies_to_db)
             session_id: Optional session ID to link jobs to
 
         Returns:
             dict: Statistics with keys 'saved' and 'skipped' and 'failed'
 
         Note:
-            Deduplication is handled by save_job_from_validated_data() which checks
+            Deduplication is handled by JobRepository.insert() which checks
             for duplicate URLs before inserting. Returns None for duplicates.
         """
         stats = {"saved": 0, "skipped": 0, "failed": 0}
@@ -194,13 +250,23 @@ class JobSearchWorkflow:
             control.check_should_stop()
 
             try:
-                # Save job (deduplication handled internally by save_job_from_validated_data)
-                job_id = self.scraper.save_job_from_validated_data(
-                    job_data, session_id=session_id
+                # Get company_id from map (case-sensitive match for now)
+                company_id = company_map.get(job_data.company)
+
+                # Convert to Job model with company_id link
+                job_model = job_data.to_job_model(
+                    session_id=session_id, company_id=company_id
                 )
+
+                # Save job (deduplication handled internally by JobRepository)
+                job_id = JobRepository.insert(job_model)
 
                 if job_id:
                     stats["saved"] += 1
+                    logger.debug(
+                        f"✓ Saved job: {job_data.job_title} at {job_data.company} "
+                        f"(ID: {job_id}, company_id: {company_id})"
+                    )
                 else:
                     # job_id is None means duplicate or save failed
                     stats["skipped"] += 1
@@ -213,7 +279,7 @@ class JobSearchWorkflow:
 
         logger.info(
             f"Database save complete: {stats['saved']}/{len(scraped_jobs)} "
-            f"jobs saved ({stats['skipped']} duplicates/failed)"
+            f"jobs saved ({stats['skipped']} duplicates, {stats['failed']} failed)"
         )
         return stats
 
@@ -307,12 +373,20 @@ class JobSearchWorkflow:
                 if self.filters is not None:
                     self.filters._close_dropdown()
 
-            # 3. Scrape jobs
-            scraped_jobs = self.scrape_jobs(jobs_found, max_jobs, skip_until)
+            # 3. Scrape jobs and companies
+            scraped_jobs, scraped_companies = self.scrape_jobs(
+                jobs_found, max_jobs, skip_until
+            )
             stats["jobs_scraped"] = len(scraped_jobs)
 
-            # 4. Save jobs to database with session_id
-            save_stats = self.save_jobs_to_db(scraped_jobs, session_id=session_id)
+            # 4. Save companies first (upsert), then save jobs with company links
+            logger.info("Saving companies to database...")
+            company_map = self.save_companies_to_db(scraped_companies)
+
+            logger.info("Saving jobs to database with company links...")
+            save_stats = self.save_jobs_to_db(
+                scraped_jobs, company_map, session_id=session_id
+            )
             stats["jobs_saved"] = save_stats["saved"]
             stats["jobs_skipped"] = save_stats["skipped"]
 

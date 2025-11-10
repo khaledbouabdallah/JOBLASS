@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 import time
@@ -13,7 +12,12 @@ from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 
-from joblass.db import Job, JobRepository, ScrapedJobData
+from joblass.db import (
+    Job,
+    JobRepository,
+    ScrapedCompanyFromJobPosting,
+    ScrapedJobData,
+)
 from joblass.utils.control import control
 from joblass.utils.logger import setup_logger
 from joblass.utils.selenium_helpers import (
@@ -776,10 +780,18 @@ class GlassdoorScraper:
 
     # === main extractor ===
 
-    def extract_job_details(self) -> dict[str, str | list | dict | bool | None]:
-        """Extract job information from Glassdoor job details page"""
-        job_data: dict[str, str | list | dict | bool | None] = {}
+    def extract_job_details(
+        self, extract_company_info: bool = True
+    ) -> tuple[Optional[ScrapedJobData], Optional[ScrapedCompanyFromJobPosting]]:
+        """
+        Extract and validate job and company details from Glassdoor job details page.
 
+        Args:
+            extract_company_info: Whether to extract company overview and reviews
+
+        Returns:
+            Tuple of (validated_job_data, validated_company_data) or (None, None) if extraction/validation fails
+        """
         try:
             wait_for_element(
                 self.driver,
@@ -787,94 +799,123 @@ class GlassdoorScraper:
                 "div.JobDetails_jobDetailsContainer__y9P3L",
             )
 
-            # self._click_on_show_more_description()
+            self._click_on_show_more_description()
 
-            job_data["job_title"] = self._extract_job_title()
-            job_data["company"] = self._extract_company()
-            job_data["location"] = self._extract_location()
-            job_data["verified_skills"] = self._extract_verified_skills()
-            job_data["required_skills"] = self._extract_required_skills()
-            job_data["description"] = self._extract_description()
+            # Extract raw job data
+            job_data = {
+                "job_title": self._extract_job_title(),
+                "company": self._extract_company(),
+                "location": self._extract_location(),
+                "verified_skills": self._extract_verified_skills(),
+                "required_skills": self._extract_required_skills(),
+                "description": self._extract_description(),
+                "salary_estimate": self._safe_extract(self.extract_salary_info),
+            }
 
             # Extract external URL and easy apply status
-            external_url, job_data["is_easy_apply"] = self._extract_job_posting_url()
-            # If we got an external URL, use it; otherwise keep the Glassdoor URL
+            external_url, is_easy_apply = self._extract_job_posting_url()
             if external_url:
                 job_data["url"] = external_url
+            job_data["is_easy_apply"] = is_easy_apply
 
-            job_data["salary_estimate"] = self._safe_extract(self.extract_salary_info)
-            job_data["company_overview"] = self._safe_extract(
-                self.extract_company_overview
-            )
-            job_data["reviews_summary"] = self._safe_extract(
-                self.extract_review_summary
-            )
+            # Validate job data with Pydantic
+            if not job_data.get("job_title") or not job_data.get("company"):
+                logger.warning("Missing required job data (title or company)")
+                return None, None
 
-            logger.info(
-                f"Extracted: {job_data.get('job_title', 'Unknown')} at {job_data.get('company', 'Unknown')}"
-            )
-            return job_data
-
-        except Exception as e:
-            logger.error(f"Error extracting job details: {str(e)}", exc_info=True)
-            return job_data
-
-    def extract_and_validate_job(self) -> Optional[ScrapedJobData]:
-        """
-        Extract job details and validate with Pydantic
-
-        Args:
-            url: Job posting URL
-
-        Returns:
-            Validated ScrapedJobData instance or None if validation fails
-        """
-        try:
-            # Extract raw data
-            raw_data = self.extract_job_details()
-
-            if not raw_data:
-                logger.warning("No data extracted from job page")
-                return None
-
-            # Validate with Pydantic
-            validated_data = ScrapedJobData.from_glassdoor_extract(raw_data)
+            validated_job = ScrapedJobData.from_glassdoor_extract(job_data)
 
             logger.info(
-                f"✓ Validated job data: {validated_data.job_title} at {validated_data.company}"
+                f"✓ Extracted & validated: {validated_job.job_title} at {validated_job.company}"
             )
             logger.debug(
-                f"Skills: {len(validated_data.get_all_skills())} total "
-                f"({len(validated_data.verified_skills)} verified, "
-                f"{len(validated_data.required_skills)} required)"
+                f"Skills: {len(validated_job.get_all_skills())} total "
+                f"({len(validated_job.verified_skills)} verified, "
+                f"{len(validated_job.required_skills)} required)"
             )
 
-            return validated_data
+            # Extract and validate company data if requested
+            validated_company = None
+            if extract_company_info:
+                try:
+                    from joblass.db.models import (
+                        CompanyOverview,
+                        ReviewItem,
+                        ReviewSummary,
+                    )
+
+                    overview_data = self._safe_extract(self.extract_company_overview)
+                    reviews_data = self._safe_extract(self.extract_review_summary)
+
+                    overview = None
+                    if overview_data:
+                        overview = CompanyOverview(**overview_data)
+
+                    reviews_summary = None
+                    if reviews_data:
+                        reviews_summary = ReviewSummary(
+                            pros=[
+                                ReviewItem(**p) for p in reviews_data.get("pros", [])
+                            ],
+                            cons=[
+                                ReviewItem(**c) for c in reviews_data.get("cons", [])
+                            ],
+                        )
+
+                    # Only create company if we have at least some data
+                    if overview or reviews_summary:
+                        validated_company = ScrapedCompanyFromJobPosting(
+                            company_name=validated_job.company,
+                            profile_url=None,  # Not available from job posting
+                            overview=overview,
+                            reviews_summary=reviews_summary,
+                            salary_estimates=(
+                                [validated_job.salary_estimate]
+                                if validated_job.salary_estimate
+                                else []
+                            ),
+                        )
+                        logger.debug(
+                            f"✓ Validated company data for {validated_job.company}"
+                        )
+
+                except Exception as e:
+                    logger.warning(f"Failed to validate company data: {e}")
+                    validated_company = None
+
+            return validated_job, validated_company
 
         except ValidationError as e:
             logger.error(f"Pydantic validation failed: {e}")
-            logger.debug(
-                f"Raw data that failed validation: {json.dumps(raw_data, indent=2)}"
-            )
-            return None
+            return None, None
         except Exception as e:
-            logger.error(f"Error extracting and validating job: {e}", exc_info=True)
-            return None
+            logger.error(f"Error extracting job details: {str(e)}", exc_info=True)
+            return None, None
 
     def search_jobs(  # noqa: C901
         self, jobs_found: int, max_jobs: Optional[int], skip_until: Optional[int]
-    ) -> list[ScrapedJobData]:
-        """Search for jobs on Glassdoor Loop through search results and extract job details."""
-        try:
+    ) -> tuple[list[ScrapedJobData], list[ScrapedCompanyFromJobPosting]]:
+        """
+        Search for jobs on Glassdoor and extract job + company details.
 
+        Args:
+            jobs_found: Total number of jobs found in search
+            max_jobs: Maximum number of jobs to scrape (None = all)
+            skip_until: Skip to this job index (for resuming)
+
+        Returns:
+            Tuple of (scraped_jobs, scraped_companies) lists
+        """
+        try:
             scraped_jobs: list[ScrapedJobData] = []
+            scraped_companies: list[ScrapedCompanyFromJobPosting] = []
 
             if max_jobs is not None:
                 jobs_found = min(jobs_found, max_jobs)
 
             if not jobs_found:
                 logger.warning("Failed to fill search form")
-                return scraped_jobs
+                return scraped_jobs, scraped_companies
 
             current_job_index = 0
             if skip_until:
@@ -893,7 +934,6 @@ class GlassdoorScraper:
 
                     # if we reached the end of the currently loaded jobs, try to load more
                     if current_job_index == len(jobs):
-
                         load_more_jobs_button = self.driver.find_element(
                             By.CSS_SELECTOR, 'button[data-test="load-more"]'
                         )
@@ -917,13 +957,20 @@ class GlassdoorScraper:
 
                     human_click(self.driver, job_element)
                     human_delay(0.3, 1)
-                    job_data: ScrapedJobData | None = self.extract_and_validate_job()
+
+                    # Extract and validate - returns tuple (job, company)
+                    job_data, company_data = self.extract_job_details()
 
                     # Add job info from header to job_data
                     if job_data:
                         job_data.job_external_id = job_element_info["job_external_id"]
                         job_data.job_age = job_element_info["job_age"]
                         job_data.posted_date = job_element_info["job_published_date"]
+                        scraped_jobs.append(job_data)
+
+                        # Add company data if present
+                        if company_data:
+                            scraped_companies.append(company_data)
 
                     highlight(
                         job_element,
@@ -931,14 +978,12 @@ class GlassdoorScraper:
                         color="lightgreen",
                         border="2px solid green",
                     )
-                    if job_data:
-                        scraped_jobs.append(job_data)
                     current_job_index += 1
+
                 except InterruptedError as e:
                     logger.info(str(e))
                     break
                 except Exception as e:
-
                     highlight(
                         job_element,
                         duration=0.5,
@@ -952,14 +997,16 @@ class GlassdoorScraper:
                     current_job_index += 1
                     continue
 
-            logger.info("=== Job search completed successfully ===")
-            return scraped_jobs
+            logger.info(
+                f"=== Job search completed: {len(scraped_jobs)} jobs, {len(scraped_companies)} companies ==="
+            )
+            return scraped_jobs, scraped_companies
 
         except Exception as e:
             logger.error(f"Search workflow failed: {str(e)}", exc_info=True)
-            return scraped_jobs
+            return scraped_jobs, scraped_companies
 
-    # =========== Company profile navigation ===========
+    # =========== Company profile navigation (full) ===========
 
     def navigate_to_company_profile(self) -> bool:
         """
