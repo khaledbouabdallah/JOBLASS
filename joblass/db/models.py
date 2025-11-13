@@ -358,6 +358,39 @@ class SearchSession(SQLModel, table=True):  # type: ignore[call-arg]
     # Relationships
     jobs: List[Job] = Relationship(back_populates="session")
 
+    def __init__(self, search_criteria: SearchCriteria | Dict[str, Any], **kwargs):
+        """
+        Initialize SearchSession with SearchCriteria or dict
+
+        Args:
+            search_criteria: SearchCriteria model or dict
+            **kwargs: Other fields
+        """
+        # Convert SearchCriteria to dict if needed
+        if isinstance(search_criteria, SearchCriteria):
+            search_criteria = search_criteria.model_dump(exclude_none=True)
+
+        super().__init__(search_criteria=search_criteria, **kwargs)
+
+    def get_search_criteria(self) -> SearchCriteria:
+        """
+        Get search criteria as SearchCriteria model
+
+        Returns:
+            SearchCriteria instance
+        """
+        return SearchCriteria(**self.search_criteria)
+
+    def update_search_criteria(self, criteria: SearchCriteria) -> None:
+        """
+        Update search criteria from SearchCriteria model
+
+        Args:
+            criteria: SearchCriteria instance
+        """
+        self.search_criteria = criteria.model_dump(exclude_none=True)
+        self.updated_at = datetime.now()
+
     def mark_completed(
         self, jobs_scraped: int, jobs_saved: int, jobs_skipped: int
     ) -> None:

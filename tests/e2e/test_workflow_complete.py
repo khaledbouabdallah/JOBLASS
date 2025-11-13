@@ -121,8 +121,8 @@ def test_workflow_creates_and_tracks_session(temp_db_for_e2e):
         workflow.scraper.jobs_to_return = create_mock_jobs(5)
         workflow.scraper.companies_to_return = create_mock_companies(5)
 
-        # Run workflow
-        stats = workflow.run(
+        # Run workflow (returns tuple: stats, jobs, companies)
+        stats, _, _ = workflow.run(
             job_title="Software Engineer",
             location="Paris",
             preferred_location="Île-de-France",
@@ -179,7 +179,9 @@ def test_workflow_links_jobs_to_session(temp_db_for_e2e):
         workflow.scraper.jobs_to_return = create_mock_jobs(3)
         workflow.scraper.companies_to_return = create_mock_companies(3)
 
-        stats = workflow.run(job_title="Data Scientist", location="Lyon", max_jobs=5)
+        stats, _, _ = workflow.run(
+            job_title="Data Scientist", location="Lyon", max_jobs=5
+        )
 
         session_id = stats["session_id"]
 
@@ -226,7 +228,7 @@ def test_workflow_handles_duplicates(temp_db_for_e2e):
         workflow1.scraper.jobs_to_return = create_mock_jobs(3)
         workflow1.scraper.companies_to_return = create_mock_companies(3)
 
-        stats1 = workflow1.run(job_title="Engineer", location="Paris", max_jobs=5)
+        stats1, _, _ = workflow1.run(job_title="Engineer", location="Paris", max_jobs=5)
 
         assert stats1["jobs_saved"] == 3
         assert stats1["jobs_skipped"] == 0
@@ -258,7 +260,9 @@ def test_workflow_handles_duplicates(temp_db_for_e2e):
             ),
         ]
 
-        stats2 = workflow2.run(job_title="Engineer", location="Paris", max_jobs=10)
+        stats2, _, _ = workflow2.run(
+            job_title="Engineer", location="Paris", max_jobs=10
+        )
 
         # Verify duplicate tracking
         assert stats2["jobs_scraped"] == 5, "Should scrape 5 jobs total"
@@ -300,7 +304,7 @@ def test_workflow_marks_session_failed_on_error(temp_db_for_e2e):
 
         workflow = JobSearchWorkflow(mock_driver)
 
-        stats = workflow.run(job_title="DevOps Engineer", location="Toulouse")
+        stats, _, _ = workflow.run(job_title="DevOps Engineer", location="Toulouse")
 
         # Workflow should return stats even on failure
         assert stats["session_id"] is not None, "Session should be created"
@@ -340,7 +344,9 @@ def test_workflow_handles_no_jobs_found(temp_db_for_e2e):
 
         workflow = JobSearchWorkflow(mock_driver)
 
-        stats = workflow.run(job_title="Unicorn Engineer", location="Middle of Nowhere")
+        stats, _, _ = workflow.run(
+            job_title="Unicorn Engineer", location="Middle of Nowhere"
+        )
 
         assert stats["jobs_found"] == 0
         assert stats["jobs_scraped"] == 0
@@ -378,7 +384,7 @@ def test_workflow_with_advanced_filters(temp_db_for_e2e):
         workflow.scraper.companies_to_return = create_mock_companies(2)
 
         # Run with advanced filters
-        stats = workflow.run(
+        stats, _, _ = workflow.run(
             job_title="ML Engineer",
             location="Nice",
             max_jobs=5,

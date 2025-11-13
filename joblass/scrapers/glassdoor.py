@@ -28,6 +28,7 @@ from joblass.utils.selenium_helpers import (
     human_move,
     human_scroll_to_element,
     safe_browser_tab_switch,
+    safe_find_element,
     scroll_until_visible,
     wait_for_element,
     wait_page_loaded,
@@ -546,6 +547,7 @@ class GlassdoorScraper:
                 By.CSS_SELECTOR, "div.JobDetails_jobDescription__uW_fK"
             ).text
         except NoSuchElementException:
+            logger.error("Job description element not found")
             return None
 
     def _extract_job_posting_url(self) -> tuple[Optional[str], Optional[bool]]:
@@ -557,6 +559,7 @@ class GlassdoorScraper:
             - For easy apply jobs: (None, True)
             - For external apply jobs: (url, False) or (None, None) if failed
         """
+        # TODO RETRY LOGIC?
         is_easy_apply = False
         try:
             # click the apply button to open the job posting in a new tab
@@ -571,6 +574,10 @@ class GlassdoorScraper:
                 By.CSS_SELECTOR, "button[data-test='easyApply']"
             )
 
+        logger.debug(
+            f"APPLY BUTTON FOUND, TRYING TO CLICK AND EXTRACT URL, IS_EASY_APPLY={is_easy_apply}"
+        )
+
         try:
             human_click(self.driver, button)
             logger.debug("Clicked apply button to open job posting")
@@ -580,14 +587,16 @@ class GlassdoorScraper:
             WebDriverWait(self.driver, 10).until(
                 lambda d: d.current_url not in ("", "about:blank")
             )
+            human_delay(0.1, 0.3)
             url = self.driver.current_url
             logger.debug(f"Extracted external job posting URL: {url}")
             self.driver.close()
+            human_delay(0.1, 0.3)
             self.driver.switch_to.window(self.driver.window_handles[0])
             return url, is_easy_apply
         except Exception as e:
-            logger.debug(f"Failed to extract external URL: {e}")
-            return None, None
+            logger.error(f"Failed to extract external URL: {e}")
+            return None, False
 
     def _parse_job_age_to_seconds(self, job_age: str) -> int | None:
         """Parse job age string to seconds.
@@ -633,6 +642,8 @@ class GlassdoorScraper:
                 By.CSS_SELECTOR, "button[data-test='show-more-cta']"
             )
             human_click(self.driver, show_more_button)
+            # TODO: wait until expanded?
+            human_delay(1.0, 2.0)
         except NoSuchElementException:
             pass
 
@@ -780,7 +791,7 @@ class GlassdoorScraper:
 
     # === main extractor ===
 
-    def extract_job_details(
+    def extract_job_details(  # noqa: C901
         self, extract_company_info: bool = True
     ) -> tuple[Optional[ScrapedJobData], Optional[ScrapedCompanyFromJobPosting]]:
         """
@@ -799,7 +810,21 @@ class GlassdoorScraper:
                 "div.JobDetails_jobDetailsContainer__y9P3L",
             )
 
+            wait_for_element(
+                self.driver,
+                By.CSS_SELECTOR,
+                "div.JobDetails_jobDescription__uW_fK",
+                timeout=5,
+            )
+
             self._click_on_show_more_description()
+
+            wait_for_element(
+                self.driver,
+                By.CSS_SELECTOR,
+                "div.JobDetails_jobDescription__uW_fK",
+                timeout=5,
+            )
 
             # Extract raw job data
             job_data = {
@@ -817,6 +842,7 @@ class GlassdoorScraper:
             if external_url:
                 job_data["url"] = external_url
             job_data["is_easy_apply"] = is_easy_apply
+            logger.debug(f"External URL JOB: {job_data['is_easy_apply']}")
 
             # Validate job data with Pydantic
             if not job_data.get("job_title") or not job_data.get("company"):
@@ -826,7 +852,7 @@ class GlassdoorScraper:
             validated_job = ScrapedJobData.from_glassdoor_extract(job_data)
 
             logger.info(
-                f"✓ Extracted & validated: {validated_job.job_title} at {validated_job.company}"
+                f"✓ Extracted & validated: {validated_job.job_title} at {validated_job.company}, url: {validated_job.url}"
             )
             logger.debug(
                 f"Skills: {len(validated_job.get_all_skills())} total "
@@ -837,6 +863,24 @@ class GlassdoorScraper:
             # Extract and validate company data if requested
             validated_company = None
             if extract_company_info:
+
+                profile_url = (
+                    self.driver.find_element(
+                        By.CSS_SELECTOR, "header[data-test='job-details-header']"
+                    )
+                    .find_elements(By.CSS_SELECTOR, "a")[0]
+                    .get_attribute("href")
+                )
+
+                profile_url = safe_find_element(
+                    self.driver,
+                    By.CSS_SELECTOR,
+                    "header[data-test='job-details-header'] a",
+                )
+
+                if profile_url:
+                    profile_url = profile_url.get_attribute("href")
+
                 try:
                     from joblass.db.models import (
                         CompanyOverview,
@@ -866,7 +910,7 @@ class GlassdoorScraper:
                     if overview or reviews_summary:
                         validated_company = ScrapedCompanyFromJobPosting(
                             company_name=validated_job.company,
-                            profile_url=None,  # Not available from job posting
+                            profile_url=profile_url,
                             overview=overview,
                             reviews_summary=reviews_summary,
                             salary_estimates=(

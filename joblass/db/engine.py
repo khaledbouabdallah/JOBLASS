@@ -67,12 +67,28 @@ def init_db(reset: bool = False) -> None:
 
     Args:
         reset: If True, drop all tables and recreate (WARNING: deletes all data)
+
+    Usage:
+        # First time setup or when schema hasn't changed
+        init_db()
+
+        # Force schema reset (drops all tables and recreates)
+        init_db(reset=True)
+
+    Note:
+        - Without reset=True, only creates missing tables (doesn't modify existing ones)
+        - Use reset=True when schema changes to apply new column definitions
+        - All data is lost when reset=True is used
     """
     db_path = get_db_path()
 
-    if reset and db_path.exists():
-        logger.warning("Resetting database - all data will be lost!")
-        db_path.unlink()
+    if reset:
+        if db_path.exists():
+            logger.warning("Resetting database - all data will be lost!")
+            db_path.unlink()
+        else:
+            logger.info("No existing database found - creating fresh database")
+
         # Recreate engine with new file
         global engine
         engine = create_engine(

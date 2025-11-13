@@ -284,3 +284,23 @@ def text_has_changed(locator, old_text):
             return False
 
     return _predicate
+
+
+def safe_find_element(
+    driver: WebDriver, by: By, value: str, timeout: int = 10
+) -> WebElement:
+    """
+    Safely find an element, returning None if not found within timeout
+
+    Args:
+        driver: Selenium WebDriver instance
+        by: Locator strategy (By.ID, By.CSS_SELECTOR, etc.)
+        value: Locator value
+        timeout: Maximum wait time in seconds
+    """
+    try:
+        element = driver.find_element(by, value)
+        return element
+    except NoSuchElementException:
+        logger.warning(f"Element not found: {by}={value}")
+        return None
